@@ -1,0 +1,148 @@
+name: Halcyon UI (auto sync upstream + build)
+
+# 自动跟踪上游 zzyoxml/md3Music：发现上游新提交 → 检出上游最新代码 →
+# 应用 Halcyon UI 补丁（悬浮毛玻璃底栏 + 毛玻璃迷你条）→ 自动编译 APK →
+# 自动发 Release。补丁打不上（上游改了相关文件）时自动开 issue 提醒。
+#
+# 使用方法（一次性）：
+#   1. 在 GitHub 上 fork zzyoxml/md3Music
+#   2. 把本仓库树里的 .github/workflows/halcyon-ui.yml 与 halcyon-ui/
+#      目录（原样）推到 fork 的默认分支
+#   3. fork 页面 Actions 标签页启用 workflow —— 之后全自动
+#
+# 产物：Releases 里的 md3music-halcyon-<日期>-arm64-v8a.apk
+
+on:
+  schedule:
+    - cron: "23 */6 * * *" # 每 6 小时（分钟值错开整点高峰）
+  workflow_dispatch: # 手动触发入口
+
+permissions:
+  contents: write # 创建 Release
+  issues: write # 补丁冲突时自动开 issue
+
+concurrency:
+  group: halcyon-ui
+  cancel-in-progress: true
+
+jobs:
+  sync-build:
+    name: Sync upstream & build Halcyon UI APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      # 1. 检出 fork（主要为了拿 halcyon-ui/ 补丁目录；代码随后切到上游树）
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # 2. 查上游默认分支最新提交（分支名动态获取——上游曾把默认分支
+      #    从 main 改为 rust-local-force，写死会 404）
+      - name: Detect upstream latest commit
+        id: upstream
+        run: |
+          base=$(curl -sf https://api.github.com/repos/zzyoxml/md3Music | jq -r .default_branch)
+          latest=$(curl -sf "https://api.github.com/repos/zzyoxml/md3Music/commits/$base" | jq -r .sha)
+          short=${latest:0:10}
+          date=$(curl -sf "https://api.github.com/repos/zzyoxml/md3Music/commits/$base" | jq -r .commit.committer.date | cut -c1-10)
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "sha=$latest" >> "$GITHUB_OUTPUT"
+          echo "short=$short" >> "$GITHUB_OUTPUT"
+          echo "date=$date" >> "$GITHUB_OUTPUT"
+          echo "上游默认分支: $base | 最新提交: $short ($date)"
+
+      # 3. 去重：同一上游提交只构建一次（按 release 是否存在判断）
+      - name: Skip if already built
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "halcyon-ui-${{ steps.upstream.outputs.short }}" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "已构建过该提交，跳过"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 4. 备份补丁（切到上游树后 fork 独有文件会消失）
+      - name: Stage patch file
+        run: cp halcyon-ui/halcyon-ui-final.patch /tmp/halcyon-final.patch
+
+      # 5. 检出上游工作树（默认分支）
+      - name: Checkout upstream tree
+        if: steps.check.outputs.build == 'true'
+        run: |
+          git remote add upstream https://github.com/zzyoxml/md3Music.git
+          git fetch upstream "${{ steps.upstream.outputs.base }}" --depth=1
+          git checkout --detach FETCH_HEAD
+          git status | head -3
+
+      # 6. 应用 Halcyon UI 成品补丁（单文件包含全部阶段；3way 容忍上游已改过这些文件的场景）
+      - name: Apply Halcyon UI patch
+        if: steps.check.outputs.build == 'true'
+        run: |
+          if git apply --3way /tmp/halcyon-final.patch; then
+            echo "补丁应用成功"
+          else
+            echo "补丁应用失败：上游相关文件已改动，需要人工更新补丁"
+            gh issue create \
+              -R "$GITHUB_REPOSITORY" \
+              --title "Halcyon UI 补丁冲突（上游 ${{ steps.upstream.outputs.short }}）" \
+              --body "上游 md3Music 最新提交已改动补丁涉及的文件，git apply --3way 失败。请重新生成补丁（更新 halcyon-ui/halcyon-ui-final.patch）。" || true
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # 7. 构建环境（与上游 main.yml 同链路：JDK17 + android-36 + Flutter stable）
+      - name: Set up JDK 17
+        if: steps.check.outputs.build == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        if: steps.check.outputs.build == 'true'
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform 36
+        if: steps.check.outputs.build == 'true'
+        run: |
+          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" >/dev/null 2>&1 || \
+            sdkmanager --install "platforms;android-36" || true
+
+      - name: Set up Flutter
+        if: steps.check.outputs.build == 'true'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # 8. 构建（抄上游 main.yml 的 standard flavor 口径；Impeller 关闭与其一致）
+      - name: Flutter pub get
+        if: steps.check.outputs.build == 'true'
+        run: flutter pub get
+
+      - name: Build APK (arm64)
+        if: steps.check.outputs.build == 'true'
+        run: |
+          flutter build apk --release --flavor standard --split-per-abi \
+            --target-platform android-arm64 \
+            --android-project-arg=md3EnableImpeller=false \
+            --dart-define=APP_VERSION=halcyon-ui-${{ steps.upstream.outputs.short }}
+          ls build/app/outputs/flutter-apk/
+
+      # 9. 发布（同上游提交只发一次）
+      - name: Create release
+        if: steps.check.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          apk=$(ls build/app/outputs/flutter-apk/*arm64*v8a*release*.apk | head -1)
+          gh release create "halcyon-ui-${{ steps.upstream.outputs.short }}" \
+            -R "$GITHUB_REPOSITORY" \
+            --title "Halcyon UI @ 上游 ${{ steps.upstream.outputs.date }} (${{ steps.upstream.outputs.short }})" \
+            --notes "自动同步上游 md3Music ${{ steps.upstream.outputs.base }}@${{ steps.upstream.outputs.short }} 并应用 Halcyon 风格 UI 成品补丁（悬浮毛玻璃底栏 + 悬浮胶囊迷你播放条 + 全局玻璃卡片 + 文字底模糊衬 + 底栏滚动隐藏 + 横屏玻璃 rail，保留进度环绕描边效果）。" \
+            "$apk#md3music-halcyon-arm64-v8a.apk"

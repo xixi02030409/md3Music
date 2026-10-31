@@ -1,0 +1,953 @@
+diff --git a/lib/app.dart b/lib/app.dart
+index 14f9315..85ab6f2 100644
+--- a/lib/app.dart
++++ b/lib/app.dart
+@@ -100,6 +100,7 @@ import 'modules/library/library_page.dart';
+ import 'modules/launchpad/launchpad_page.dart';
+ import 'modules/login/login_page.dart';
+ import 'widgets/app_animation.dart';
++import 'widgets/halcyon_glass.dart';
+ import 'modules/onboarding/onboarding_page.dart';
+ import 'modules/onboarding/user_agreement_page.dart';
+ import 'modules/personal_fm/personal_fm_page.dart';
+@@ -1078,6 +1079,32 @@ class _AppViewState extends State<_AppView> {
+     final cs = base.colorScheme;
+     final withTransparentSurfaces = base.copyWith(
+       scaffoldBackgroundColor: Colors.transparent,
++      // 【Halcyon 玻璃卡·全局】背景图模式下全部卡片半透明化：壁纸已由
++      // AppBackground 全局预模糊（ImageFiltered），半透明卡透出的就是
++      // 毛玻璃背景——这就是 Halcyon 截图里"卡片透出模糊壁纸"的效果，
++      // 而纯色 alpha 零渲染开销（列表几十张卡逐个 BackdropFilter 不可
++      // 接受）。surfaceContainer 族是本 app 自绘卡片的取色主源，一次
++      // 带 alpha 全部变玻璃；分档沿用 M3 语义（越浮起越实），保证菜单/
++      // 弹层可读性。dialog/drawer/bottomSheet 在下方已显式钉近实色，
++      // 引用的是改造前的实色 cs，不受影响。
++      colorScheme: cs.copyWith(
++        surfaceContainerLowest: cs.surfaceContainerLowest
++            .withValues(alpha: kHalcyonGlassSurfaceLowestAlpha),
++        surfaceContainerLow:
++            cs.surfaceContainerLow.withValues(alpha: kHalcyonGlassSurfaceLowAlpha),
++        surfaceContainer:
++            cs.surfaceContainer.withValues(alpha: kHalcyonGlassSurfaceAlpha),
++        surfaceContainerHigh:
++            cs.surfaceContainerHigh.withValues(alpha: kHalcyonGlassSurfaceHighAlpha),
++        surfaceContainerHighest: cs.surfaceContainerHighest
++            .withValues(alpha: kHalcyonGlassSurfaceHighestAlpha),
++      ),
++      cardTheme: base.cardTheme.copyWith(
++        // 玻璃卡不要阴影（阴影画在透明卡上会出现"悬浮暗影"脏边）
++        elevation: 0,
++        color: cs.surfaceContainer.withValues(alpha: kHalcyonGlassSurfaceAlpha),
++        surfaceTintColor: Colors.transparent,
++      ),
+       appBarTheme: base.appBarTheme.copyWith(
+         backgroundColor: Colors.transparent,
+         surfaceTintColor: Colors.transparent,
+diff --git a/lib/core/layout/bottom_chrome_scope.dart b/lib/core/layout/bottom_chrome_scope.dart
+index 74f3669..2d5073f 100644
+--- a/lib/core/layout/bottom_chrome_scope.dart
++++ b/lib/core/layout/bottom_chrome_scope.dart
+@@ -40,6 +40,7 @@ class BottomChromeScope extends InheritedWidget {
+     required this.hasBottomChrome,
+     this.bottomChromeCollapse = 0.0,
+     this.collapseProgress,
++    this.slotHeight = 0.0,
+     required super.child,
+   });
+ 
+@@ -61,6 +62,19 @@ class BottomChromeScope extends InheritedWidget {
+   /// 处理，与 [chromeCollapseOf] 的兜底口径一致。
+   final Animation<double>? collapseProgress;
+ 
++  /// 底栏槽位总高（含系统手势条净空；与 `BottomChromeSlot.slotHeight` 同源）。
++  ///
++  /// **为什么迷你条需要它**：【Halcyon 底栏】开启 `extendBody` 后 body 延伸到
++  /// 槽位后面，而槽位由 `Scaffold` 画在 body 之上 —— 底部常驻迷你条若不自行
++  /// 抬升，内容行会被悬浮玻璃底栏盖住。坞位在场时（[hasBottomChrome]），迷你条
++  /// 把「坞位净空端点」从 0 抬到 `slotHeight − 自身底部净空 + 抬升量`
++  /// （见 `mini_player.dart` 的 `kMiniPlayerDockLift`），内容行恰好落在玻璃底栏
++  /// 胶囊上方；坞位不存在（横屏侧栏 / 已收起 / 无 scope 祖先）时本字段无意义，
++  /// 消费方按 0 处理（净空端点退回 `alone` 口径，与引入本字段前逐值一致）。
++  ///
++  /// 取值口径：竖屏紧凑布局 = 槽位总高；横屏侧栏 / 沉浸 = 0。
++  final double slotHeight;
++
+   /// 读取当前子树下方是否有底部 chrome；无 scope 祖先时返回 `false`。
+   ///
+   /// 在 build 内调用会建立依赖：竖屏↔横屏切换导致取值变化时子树自动重建。
+@@ -104,5 +118,6 @@ class BottomChromeScope extends InheritedWidget {
+   @override
+   bool updateShouldNotify(BottomChromeScope oldWidget) =>
+       oldWidget.hasBottomChrome != hasBottomChrome ||
+-      oldWidget.bottomChromeCollapse != bottomChromeCollapse;
++      oldWidget.bottomChromeCollapse != bottomChromeCollapse ||
++      oldWidget.slotHeight != slotHeight;
+ }
+diff --git a/lib/core/layout/responsive_layout.dart b/lib/core/layout/responsive_layout.dart
+index bd683dd..53ad6c1 100644
+--- a/lib/core/layout/responsive_layout.dart
++++ b/lib/core/layout/responsive_layout.dart
+@@ -1,10 +1,12 @@
+ import 'package:dpad/dpad.dart';
+-import 'package:flutter/rendering.dart' show RenderProxyBox;
++import 'package:flutter/rendering.dart' show RenderProxyBox, ScrollDirection;
+ import 'package:material_ui/material_ui.dart';
+ import 'package:m3e_core/m3e_core.dart';
+ import 'package:provider/provider.dart';
+ 
+ import '../build_flags.dart';
++// 【Halcyon 底栏】毛玻璃容器（自包含组件，仅本文件钩子引用）
++import '../../widgets/halcyon_glass.dart';
+ import 'bottom_chrome_dimens.dart';
+ import 'bottom_chrome_scope.dart';
+ import 'bottom_chrome_sink.dart';
+@@ -41,7 +43,16 @@ bool usesTwoPane(double width) => width >= twoPaneBreakpoint;
+ /// 横屏 NavigationRail 槽位宽的默认档（首次实测回填前的占位，与
+ /// `_ResponsiveScaffoldState._railWidth` 的初值同源；rail 实际宽随文字档位由
+ /// [_MeasureWidth] 实测，见 [navigationRailReservedWidth]）。
+-const double kNavigationRailDefaultWidth = 96.0;
++// 【Halcyon 玻璃 rail】需容纳玻璃胶囊左右边距 12+4 + rail 内容区 96
++// （M3 带文字档的 rail 宽）。OverflowBox 按本值恒定强制（_MeasureWidth
++// 回填同值，实为恒定档，非动态测量）。
++const double kNavigationRailDefaultWidth = 112.0;
++
++/// 【Halcyon 悬浮胶囊】底栏玻璃胶囊的下边距（dp）——底栏 Padding
++/// fromLTRB(12, 0, 12, 10) 的 bottom。槽位总高必须包含它（见
++/// _buildCompactLayout slotHeight 的勘误说明），否则 Slot 的 Clip.hardEdge
++/// 会把悬浮边距整段裁掉；mini_player 的 kMiniPlayerDockLift 口径也依赖它。
++const double kBottomBarDockBottomInset = 10.0;
+ 
+ /// 横屏 rail 与内容区之间的分隔线占位宽（`VerticalDivider(thickness: 1,
+ /// width: 1)`，见 `_buildRailLayout`）。
+@@ -492,6 +503,61 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
+   /// 门控仅为两条路径行为一致。
+   bool _tvNavAutofocusDone = false;
+ 
++  /// 【Halcyon 滚动隐藏】主页面列表滚动期望的底栏收起态：向下浏览（手指
++  /// 上滑）为 true，向上回看为 false。与 route 驱动的 [hideNavigation]
++  /// 取或作为底栏最终目标（见 [_applyChromeTarget] 的全部调用点）。
++  /// 只作用于竖屏底栏（横屏 rail 维持 route 驱动，滚动不收侧栏）。
++  bool _scrollHidden = false;
++
++  /// 底栏收起目标的唯一写入口：route prop（didUpdateWidget）与滚动期望
++  /// （_onUserScroll）都收敛到这里，避免两处直呼 forward/reverse 出现
++  /// 目标打架。reduceMotion 时跳过动画直落端点（与上游口径一致）。
++  void _applyChromeTarget(bool hide) {
++    if (_reduceMotion) {
++      _chromeHide.value = hide ? 1.0 : 0.0;
++    } else if (hide) {
++      _chromeHide.forward();
++    } else {
++      _chromeHide.reverse();
++    }
++  }
++
++  /// 【Halcyon 滚动隐藏】监听主布局滚动方向驱动底栏收起/展开。
++  ///
++  /// 过滤条件（全部命中才生效）：
++  /// - 总开关 [kHalcyonScrollHideChrome]；
++  /// - 竖向滚动（PageView/TabBarView 横向翻页的 UserScrollNotification
++  ///   axis 是 horizontal，排除——翻页不是浏览列表，收起底栏会打断交互）；
++  /// - 非 route 收起态（二级页面由 [hideNavigation] 驱动，滚动语义不掺和）；
++  /// - 非 TV（dpad 滚动是逐项聚焦伴随的连续滚动，收起底栏会让导航栏焦点
++  ///   系统和可视状态错位）。
++  ///
++  /// UserScrollNotification.direction 已是滚动引擎的手势方向判定（reverse
++  /// = 内容向上 = 向下浏览），自带滞回，无需额外阈值。返回 false 不拦截
++  /// 冒泡，既有 NotificationListener 链路（迷你条等）不受影响。
++  bool _onUserScroll(UserScrollNotification n) {
++    if (!kHalcyonScrollHideChrome) return false;
++    if (n.metrics.axis != Axis.vertical) return false;
++    if (widget.hideNavigation || kTvBuild) return false;
++    switch (n.direction) {
++      case ScrollDirection.reverse:
++        if (!_scrollHidden) {
++          // setState：主 build 的 chromeHidden 判定（槽位移除）读本字段，
++          // 需与动画并行请求一次重建；方向切换只发生一次，非逐帧。
++          setState(() => _scrollHidden = true);
++          _applyChromeTarget(true);
++        }
++      case ScrollDirection.forward:
++        if (_scrollHidden) {
++          setState(() => _scrollHidden = false);
++          _applyChromeTarget(false);
++        }
++      case ScrollDirection.idle:
++        break;
++    }
++    return false;
++  }
++
+   @override
+   void initState() {
+     super.initState();
+@@ -547,13 +613,10 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
+       _selectedBounceKeys = _initBounceKeys(count);
+     }
+     if (widget.hideNavigation != oldWidget.hideNavigation) {
+-      if (_reduceMotion) {
+-        _chromeHide.value = widget.hideNavigation ? 1.0 : 0.0;
+-      } else if (widget.hideNavigation) {
+-        _chromeHide.forward();
+-      } else {
+-        _chromeHide.reverse();
+-      }
++      // route 驱动接管时滚动期望作废（从二级页面回来底栏必须是展开态；
++      // 不复位的话 _scrollHidden 残留会让 effectiveHide 与 prop 口径分叉）
++      _scrollHidden = false;
++      _applyChromeTarget(widget.hideNavigation);
+     }
+     // 横屏侧栏滑出：跟 rail 自己的显隐目标（可能与底栏分叉，见 initState 注释）。
+     final bool hideRail = widget.hideRailNavigation ?? widget.hideNavigation;
+@@ -685,11 +748,29 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
+         return LayoutBuilder(
+           builder: (BuildContext context, BoxConstraints constraints) {
+             final bool rail = usesNavigationRail(constraints.maxWidth);
++            // 【Halcyon 底栏】槽位总高与 _buildCompactLayout 内的 slotHeight
++            // **同式**（同源两处算：改一处必须同步另一处）。经 scope 下发给
++            // 底部常驻迷你条做坞位净空抬升——extendBody 后 body 延伸到槽位
++            // 后面，迷你条不自行抬升就会被后画的玻璃底栏盖住（见
++            // BottomChromeScope.slotHeight 的说明）。横屏侧栏没有底栏槽位，
++            // 传 0（坞位存在性同为 false，消费方不会读它）。
++            // 【勘误 2026-10-31】+ kBottomBarDockBottomInset：槽位总高 =
++            // 底栏本体真实总高（含胶囊下边距），与 _buildCompactLayout 的
++            // slotHeight 同式双写（改一处必须同步另一处）。
++            final double scopeSlotHeight = rail
++                ? 0.0
++                : (Theme.of(context).navigationBarTheme.labelBehavior ==
++                          NavigationDestinationLabelBehavior.alwaysHide
++                      ? BottomChromeDimens.navBarIconOnlyHeight
++                      : BottomChromeDimens.navBarWithLabelHeight) +
++                    MediaQuery.paddingOf(context).bottom +
++                    kBottomBarDockBottomInset;
+             return BottomChromeScope(
+               // 坞位存在性：收起动画期间底栏仍在槽位里（collapse < 1），
+               // 播放条据此把净空口径线性过渡（见 BottomChromeScope 的说明）。
+               hasBottomChrome: !rail && collapse < 1.0,
+               bottomChromeCollapse: collapse,
++              slotHeight: scopeSlotHeight,
+               // 逐帧进度源：同一份收起动画本体，供消费方**订阅**（而不是对本
+               // InheritedWidget 建立依赖）—— 后者会让整棵消费子树逐帧重建。
+               collapseProgress: _chromeHideCurve,
+@@ -716,26 +797,53 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
+             NavigationDestinationLabelBehavior.alwaysHide
+         ? BottomChromeDimens.navBarIconOnlyHeight
+         : BottomChromeDimens.navBarWithLabelHeight;
+-    final double slotHeight = barHeight + MediaQuery.paddingOf(context).bottom;
++    // 【勘误 2026-10-31】槽位总高 = 底栏本体真实总高：玻璃容器高（栏高 +
++    // NavigationBar 内部 SafeArea 补的手势条净空）+ 胶囊下边距。旧口径漏了
++    // 下边距——Slot 的 Clip.hardEdge 按 slotHeight 裁切，胶囊悬浮在屏底
++    // 上方的 10dp 边距被整段裁掉（悬浮失效）；收起滑动距离/面板下沉几何
++    // 同理差 10dp。与 LayoutBuilder 分支的 scopeSlotHeight 同式双写。
++    final double slotHeight =
++        barHeight +
++        MediaQuery.paddingOf(context).bottom +
++        kBottomBarDockBottomInset;
+     final double collapse = _chromeHideCurve.value;
+     // 隐藏判定不能只看进度：恢复方向（reverse）起步的那一帧进度仍是 1.0，
+     // 只看进度会让底栏在"第一帧就该重新进树"时仍被判为已隐藏、退化成硬切。
+-    // 目标态（widget.hideNavigation）与进度双条件：只有"收起方向 + 进度到 1"
++    // 目标态（route prop 或滚动期望）与进度双条件：只有"收起方向 + 进度到 1"
+     // 才移除槽位，两端语义与原实现一致（见不变量：collapse>=1 传 null）。
+-    final bool chromeHidden = collapse >= 1.0 && widget.hideNavigation;
++    final bool chromeHidden =
++        collapse >= 1.0 && (widget.hideNavigation || _scrollHidden);
+     return Scaffold(
+       key: _scaffoldKey,
+       appBar: widget.appBar,
++      // 【Halcyon 底栏】毛玻璃透底的关键：body 延伸到 bottomNavigationBar
++      // 槽位后面，BackdropFilter 才能模糊到列表内容（否则槽位区域只有
++      // Scaffold 背景色，毛玻璃糊不出内容感）。
++      // body 底部避让的**真实口径**：extendBody 时 Scaffold 会给 body 注入
++      // padding.bottom=槽位高，但下方 _withAnimatedBottomInset 用
++      // `手势净空 × 收起进度` **覆盖**了它（静止时=0）——这是刻意为之：
++      // 页面列表保持上游口径（0），内容得以滚动到玻璃底栏后面被模糊；而被
++      // 盖住风险的底部常驻迷你条，改由 BottomChromeScope.slotHeight 下发
++      // 槽位高、在 mini_player 内自行抬升到玻璃胶囊上方（kMiniPlayerDockLift）。
++      // 页面口径与上游逐值一致，玻璃效果与迷你条可见性两头都成立。
++      extendBody: true,
+       // body 底部安全区补偿：底栏还在槽位里时 Scaffold 会把 body 的底部 padding
+       // **整段移除**（`removeBottomPadding: bottomNavigationBar != null`），于是
+       // 底栏收起过程中 body 底部 inset 一直是 0，直到槽位被移除那一帧才突然补回
+       // 真实值 —— 那又是一处滞后跳变。这里按收起进度把该 inset 线性补回去；
+       // 两端同样保持包装（见 _withAnimatedBottomInset：换 body 槽位的类型会重建
+       // 整棵 body，常驻播放条的封面就会闪）。
+-      body: _withAnimatedBottomInset(
+-        context,
+-        widget.compactBody ?? widget.body,
+-        collapse,
++      // 【Halcyon 滚动隐藏】滚动方向驱动底栏收起/展开：NotificationListener
++      // 挂在 body 上，页面列表的 UserScrollNotification 冒泡到此处。返回
++      // false 不拦截，下游既有通知链路原样。包在 _withAnimatedBottomInset
++      // 外层——它只是透传 child 的 wrapper，包内外等价，选外层少一层缩进。
++      body: NotificationListener<UserScrollNotification>(
++        onNotification: _onUserScroll,
++        child: _withAnimatedBottomInset(
++          context,
++          widget.compactBody ?? widget.body,
++          collapse,
++        ),
+       ),
+       floatingActionButton: widget.floatingActionButton,
+       bottomNavigationBar: chromeHidden
+@@ -751,11 +859,25 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
+                 // tv: 主导航分区（memoryKey 'tv/main-nav'，边缘 leave）。正常构建
+                 // 原样返回 NavigationBar。
+                 child: _tvWrapNavRegion(
+-                  NavigationBar(
+-                    // 仅图标（alwaysHide）时高度减半紧凑显示（44）；
+-                    // 显示文字（始终显示/仅当前页）时用 64 紧凑高度，
+-                    // 比默认 80 更矮但仍能容纳 icon + label。
+-                    height: barHeight,
++                  // 【Halcyon 底栏】悬浮毛玻璃胶囊 dock：底栏从"贴底通栏"
++                  // 变为"左右 12dp / 下 10dp 悬浮 + 全圆角胶囊 + 高斯模糊 +
++                  // 半透明底 + 内缘高光"。图标/胶囊回弹/文字三档行为全部
++                  // 原样保留（_CapsuleBounce / theme labelBehavior 未动）。
++                  // backgroundColor/shadowColor/surfaceTintColor 三连透明：
++                  // NavigationBar 自带的 M3 surfaceContainer 底色与 tint 会
++                  // 盖住毛玻璃，必须关掉让玻璃层当底。
++                  Padding(
++                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
++                    child: HalcyonGlassContainer(
++                      borderRadius: BorderRadius.circular(barHeight / 2),
++                      child: NavigationBar(
++                        backgroundColor: Colors.transparent,
++                        shadowColor: Colors.transparent,
++                        surfaceTintColor: Colors.transparent,
++                        // 仅图标（alwaysHide）时高度减半紧凑显示（44）；
++                        // 显示文字（始终显示/仅当前页）时用 64 紧凑高度，
++                        // 比默认 80 更矮但仍能容纳 icon + label。
++                        height: barHeight,
+                     selectedIndex: widget.selectedIndex,
+                     onDestinationSelected: _handleDestinationSelected,
+                     // 每个 tab 的图标外包自定义胶囊（选中时显示，点击/切换后
+@@ -776,6 +898,8 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
+                         ),
+                     ],
+                   ),
++                      ),
++                    ),
+                 ),
+               ),
+             ),
+@@ -895,7 +1019,15 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
+                             // NavigationBar 同一条路径共用；二者按宽度互斥，不会
+                             // 同屏双 Region）。正常构建原样返回 NavigationRail。
+                             child: _tvWrapNavRegion(
+-                              NavigationRail(
++                              // 【Halcyon 玻璃 rail】横屏侧栏玻璃化：悬浮玻璃
++                              // 胶囊（左右 12 / 上下 12 / 右留 4 呼吸），全圆角
++                              // 28，rail 自身底色透明让玻璃当底（与竖屏底栏
++                              // 同一 HalcyonGlassContainer 材质，无条件渲染）。
++                              Padding(
++                                padding: const EdgeInsets.fromLTRB(12, 12, 4, 12),
++                                child: HalcyonGlassContainer(
++                                  borderRadius: BorderRadius.circular(28),
++                                  child: NavigationRail(
+                                 selectedIndex: widget.selectedIndex,
+                                 onDestinationSelected: _handleDestinationSelected,
+                                 // 每个 tab 的图标外包自定义胶囊（icon 与 selectedIcon
+@@ -936,6 +1068,8 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
+                                 // tab 过多时 NavigationRail 内部自动滚动。宽度/间距均为
+                                 // 原生固定规格。
+                                 groupAlignment: 0.0,
++                                backgroundColor: Colors.transparent,
++                              ),
+                               ),
+                             ),
+                           ),
+@@ -946,37 +1080,6 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
+                 );
+               },
+             ),
+-            // 分隔线与侧栏同节奏：槽位宽度随收起进度归零 + 淡出（1px 线滑出无意义）。
+-            AnimatedBuilder(
+-              animation: _railHideCurve,
+-              builder: (context, _) {
+-                final hideRail =
+-                    widget.hideRailNavigation ?? widget.hideNavigation;
+-                final double c = kTvBuild
+-                    ? (hideRail ? 1.0 : 0.0)
+-                    : _railHideCurve.value.clamp(0.0, 1.0);
+-                return Visibility(
+-                  visible: !(hideRail && c >= 1.0),
+-                  maintainState: true,
+-                  child: ClipRect(
+-                    child: SizedBox(
+-                      width: (1 - c).clamp(0.0, 1.0),
+-                      child: Align(
+-                        alignment: Alignment.centerRight,
+-                        child: Opacity(
+-                          opacity: 1 - c,
+-                          child: VerticalDivider(
+-                            thickness: 1,
+-                            width: 1,
+-                            color: Theme.of(context).colorScheme.outlineVariant,
+-                          ),
+-                        ),
+-                      ),
+-                    ),
+-                  ),
+-                );
+-              },
+-            ),
+             Expanded(child: screenType == ScreenType.expanded
+                 ? widget.expandedBody ?? widget.mediumBody ?? widget.body
+                 : widget.mediumBody ?? widget.body),
+diff --git a/lib/modules/player/mini_player.dart b/lib/modules/player/mini_player.dart
+index ea75e95..131dd24 100644
+--- a/lib/modules/player/mini_player.dart
++++ b/lib/modules/player/mini_player.dart
+@@ -1,4 +1,6 @@
+ import 'dart:math' as math;
++// 【Halcyon 迷你条】ImageFilter.blur（BackdropFilter 用）
++import 'dart:ui' show ImageFilter;
+ 
+ import 'package:flutter/gestures.dart';
+ import 'package:dpad/dpad.dart';
+@@ -43,6 +45,30 @@ const double kMiniPlayerBaseSideInset = 4.0;
+ /// 迷你条在过渡帧抖动，故钉一个不依赖 inset 的下限。
+ const double kMiniPlayerMinBottomClearance = 12.0;
+ 
++/// 坞位在场时，迷你条内容行相对「玻璃底栏胶囊顶沿」的额外抬升（dp）。
++///
++/// 【Halcyon 底栏】`extendBody: true` 后 body 延伸到底栏槽位后面，而槽位由
++/// `Scaffold` 画在 body 之上：坞位净空端点若仍是 0，内容行会被悬浮玻璃底栏
++/// 盖住。端点改为 `slotHeight − alone.bottom + 本值`：slotHeight 含手势条净空，
++/// 先减掉自身底部净空（≈底栏胶囊自己承担的 gesture 区），再加
++/// 底栏胶囊下边距 10（`responsive_layout` 悬浮胶囊 EdgeInsets 的 bottom）
++/// + 迷你条与底栏的视觉间距 8。改底栏悬浮胶囊边距时必须同步本值。
++const double kMiniPlayerDockLift = 8.0;
++
++/// 【勘误 2026-10-31】上方旧文档的端点口径 `slotHeight - alone.bottom + 18`
++/// 作废，两处错误：①多减 alone.bottom（手势机上 ≈ 手势条 inset 48px+），
++/// 内容行沉进玻璃胶囊内被盖住——alone.bottom 是「自身即屏底」口径的圆角
++/// 防护，与坞位抬升无关；②当时 slotHeight 不含胶囊下边距 10（Slot 的
++/// Clip.hardEdge 按它裁切，胶囊悬浮边距被整段裁掉，悬浮从未真正生效）。
++/// 新口径：端点 = slotHeight（底栏本体真实总高，含下边距，即胶囊顶沿到
++/// 屏底距离）+ 本值（纯视觉间距 8）。
++
++/// 【Halcyon 悬浮胶囊】迷你条玻璃胶囊的左右边距（dp），与底栏悬浮胶囊的
++/// 左右 12 对齐（responsive_layout 底栏 Padding 的 horizontal）。底栏收起
++/// 时随收起进度收拢为 0——迷你条落为「贴边屏底」的自身形态，横向圆角
++/// 避让由内容行自身的 lerp horizontal（base → alone.horizontal）承担。
++const double kMiniPlayerCapsuleSideMargin = 12.0;
++
+ /// 圆角反解出的左右内边距上限（dp），防止异常大的上报值把内容挤成一条。
+ const double kMiniPlayerMaxHorizontalClearance = 24.0;
+ 
+@@ -97,26 +123,32 @@ MiniPlayerCornerClearance resolveMiniPlayerCornerClearanceFrom({
+   return (bottom: bottom, horizontal: horizontal);
+ }
+ 
+-/// 在「底栏完整在场」（底 0 / 左右基础值）与「自身即屏幕最底部」（[alone]）两套
+-/// 口径之间，按底栏收起进度 [t] **线性插值**。
++/// 在「底栏完整在场」（底 [dockedBottom] / 左右基础值）与「自身即屏幕最底部」
++/// （[alone]）两套口径之间，按底栏收起进度 [t] **线性插值**。
+ ///
+ /// 为什么是线性而不是几何反解：两段位移（底栏槽位收缩、净空补回）都由同一个 `t`
+ /// 驱动，内容绝对位移 = 槽位高 − 净空，线性插值与底栏运动逐帧同源，读起来是一个
+ /// 动作。旧实现按 bool 二选一，转场末帧会突然多出十几到几十 dp 的净空，看起来
+ /// 就是内容跳一下。
+ ///
++/// [dockedBottom] 是坞位在场时的底部净空端点：【Halcyon 底栏】extendBody 后
++/// 迷你条要自行抬升到玻璃底栏上方，端点不再是 0（见 [kMiniPlayerDockLift]）；
++/// 缺省 0 保持既有调用点与测试的旧口径（坞位不存在 / 横屏侧栏时调用方传 0，
++/// 插值退化为旧行为）。
++///
+ /// [t] 的取值口径（含坞位不存在 / 横屏侧栏时的兜底）见
+ /// `_MiniPlayerState._collapseT`。
+ MiniPlayerCornerClearance lerpMiniPlayerClearance({
+   required MiniPlayerCornerClearance alone,
+   required double t,
++  double dockedBottom = 0.0,
+ }) {
+   if (t >= 1.0) return alone;
+   if (t <= 0.0) {
+-    return (bottom: 0.0, horizontal: kMiniPlayerBaseSideInset);
++    return (bottom: dockedBottom, horizontal: kMiniPlayerBaseSideInset);
+   }
+   return (
+-    bottom: alone.bottom * t,
++    bottom: dockedBottom + (alone.bottom - dockedBottom) * t,
+     horizontal:
+         kMiniPlayerBaseSideInset +
+         (alone.horizontal - kMiniPlayerBaseSideInset) * t,
+@@ -411,6 +443,11 @@ class _MiniPlayerState extends State<MiniPlayer>
+   // 上滑累计距离 / 是否已确认展开手势 / 完整展开距离（MiniPlayer 顶端 Y）
+   double _dragDistance = 0.0;
+   bool _dragActivated = false;
++
++  // 最近一帧留白层回写的「玻璃外净空带」高度：悬浮胶囊形态下 box 含玻璃外
++  // 的透明净空带，可见胶囊底端 = box 底端 - 本值（_onRawDown 反解 morph
++  // 起点/拖拽锚点用）。builder 逐帧回写，初值 0（首次手势前 build 必已跑）。
++  double _visualBottomInset = 0.0;
+   double _miniTopY = 0.0;
+   // 迷你条底端 Y：与 [_miniTopY] 同一次测量（同为锚点空间），
+   // 供双向展开面板反解条高 —— p=0 时面板必须恰好等于迷你条矩形。
+@@ -447,7 +484,12 @@ class _MiniPlayerState extends State<MiniPlayer>
+     _miniTopY =
+         box?.localToGlobal(Offset.zero, ancestor: _scaleAnchor).dy ?? 0.0;
+     // 底端用同一个 box 的布局高度（与 localToGlobal 同处锚点空间，坐标系一致）。
+-    _miniBottomY = box == null ? 0.0 : _miniTopY + box.size.height;
++    // 【Halcyon 悬浮形态】box 含玻璃外的透明净空带，可见胶囊底端要扣掉
++    // _visualBottomInset（最近一帧留白层回写），morph 起点/面板反解才与
++    // 视觉胶囊对齐（p=0 时面板恰好等于胶囊矩形）。
++    _miniBottomY = box == null
++        ? 0.0
++        : _miniTopY + box.size.height - _visualBottomInset;
+   }
+ 
+   void _onRawMove(PointerMoveEvent e) {
+@@ -677,12 +719,24 @@ class _MiniPlayerState extends State<MiniPlayer>
+     // - 终态净空按 aspect 读 MediaQuery（`viewPaddingOf` + `displayCornerRadiiOf`）：
+     //   同期 `_withAnimatedBottomInset` 每帧都在改 `padding.bottom`，全量
+     //   `MediaQuery.of` 依赖等于第二个逐帧重建源。
+-    final collapse = BottomChromeScope.collapseStateOf(context).animation ??
++    final collapseState = BottomChromeScope.collapseStateOf(context);
++    final collapse = collapseState.animation ??
+         const AlwaysStoppedAnimation<double>(1.0);
+     final alone = resolveMiniPlayerCornerClearanceFrom(
+       viewPaddingBottom: MediaQuery.viewPaddingOf(context).bottom,
+       cornerRadii: MediaQuery.displayCornerRadiiOf(context),
+     );
++    // 坞位净空端点：【Halcyon 底栏】extendBody 后 body 延伸到槽位后面，坞位
++    // 在场时内容行必须自行抬升到玻璃底栏胶囊上方（端点 0 会被后画的底栏盖住）。
++    // 端点 = slotHeight − 自身底部净空 + 抬升量；坞位不存在（横屏 / 已收起 /
++    // 二级路由无 scope）时退回 0，插值退化为引入前的旧行为。
++    // 【勘误 2026-10-31】端点 = slotHeight（底栏本体真实总高，含胶囊下
++    // 边距 10，即胶囊顶沿高度）+ kMiniPlayerDockLift（视觉间距 8）。旧式
++    // `slotHeight - alone.bottom + 18` 多减了 alone.bottom，内容行沉进胶囊
++    // 被盖住，见 kMiniPlayerDockLift 的勘误说明。
++    final double dockedBottom = collapseState.hasBottomChrome
++        ? collapseState.slotHeight + kMiniPlayerDockLift
++        : 0.0;
+     // 底色在 build 里算一次、由 builder 闭包捕获：主题/壁纸开关变化才重算，
+     // 逐帧零分配。
+     final background = resolveMiniPlayerBackground(
+@@ -736,22 +790,44 @@ class _MiniPlayerState extends State<MiniPlayer>
+               alone,
+             ),
+             builder: (context, child) {
++              final t = _collapseT(context, collapse);
+               final clearance = lerpMiniPlayerClearance(
+                 alone: alone,
+-                t: _collapseT(context, collapse),
++                t: t,
++                dockedBottom: dockedBottom,
+               );
+-              return DecoratedBox(
+-                // 底色画在这一层（含底部净空区）：净空带与条体同色，不露白边。
+-                // 取值与展开面板的过渡态底色同源（resolveMiniPlayerBackground），
+-                // p=0 时面板窗口恰好压在本条上，颜色一致才看不出「起点色差」。
+-                decoration: BoxDecoration(color: background),
+-                child: Padding(
+-                  // 底部净空：自身即屏幕最底部时（二级路由 / 横屏侧栏 /
+-                  // 导航栏隐藏），同时防住屏幕圆角裁切与系统手势条；下方还压着
+-                  // NavigationBar 时沿用原 SafeArea(bottom: true) 口径
+-                  // （Scaffold 已移除 body 的 bottom padding，实测为 0，两者等价）。
+-                  padding: EdgeInsets.only(bottom: clearance.bottom),
+-                  child: child,
++              // 供 _onRawDown 反解可见胶囊底端：玻璃只包内容行，净空带在玻璃
++              // 外，box 矩形 ≠ 视觉矩形（morph 起点/拖拽锚点按可见胶囊算）。
++              _visualBottomInset = clearance.bottom;
++              // 【Halcyon 迷你条·悬浮胶囊形态】玻璃只包内容行（全圆角 20 胶囊），
++              // 底部净空带移到玻璃外：坞位在场时内容行悬在玻璃底栏胶囊顶沿上方
++              // 8dp（kMiniPlayerDockLift），与底栏之间的缝透出列表内容（只被
++              // 底栏玻璃模糊）——Halcyon Floating 的签名视觉。净空带本身仍属
++              // 本条命中区（Listener 在最外，点缝照样展开播放页）。侧边距与
++              // 底栏胶囊对齐（kMiniPlayerCapsuleSideMargin），底栏收起时随 t
++              // 收拢为 0（迷你条落为贴边屏底的自身形态）。
++              final side =
++                  kMiniPlayerCapsuleSideMargin * (1.0 - t).clamp(0.0, 1.0);
++              return Padding(
++                padding: EdgeInsets.only(
++                  left: side,
++                  right: side,
++                  bottom: clearance.bottom,
++                ),
++                child: ClipRRect(
++                  borderRadius: BorderRadius.circular(20),
++                  child: BackdropFilter(
++                    filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
++                    child: DecoratedBox(
++                      // 磨砂 tint：亮 White@0.38 / 暗 #111114@0.42（Halcyon 参数）。
++                      decoration: BoxDecoration(
++                        color: Theme.of(context).brightness == Brightness.dark
++                            ? const Color(0xFF111114).withValues(alpha: 0.42)
++                            : Colors.white.withValues(alpha: 0.38),
++                      ),
++                      child: child,
++                    ),
++                  ),
+                 ),
+               );
+             },
+diff --git a/lib/modules/user/listen_stats_page.dart b/lib/modules/user/listen_stats_page.dart
+index b70edd2..03c9fb3 100644
+--- a/lib/modules/user/listen_stats_page.dart
++++ b/lib/modules/user/listen_stats_page.dart
+@@ -13,6 +13,7 @@ import '../../providers/kugou_provider.dart';
+ import '../../providers/listen_stats_provider.dart';
+ import '../../providers/player_provider.dart';
+ import '../../services/kugou_api/kugou_models.dart';
++import '../../widgets/halcyon_glass.dart';
+ import '../../widgets/song_list_item.dart';
+ import '../artist/artist_detail_page.dart';
+ import '../player/secondary_mini_player.dart';
+@@ -347,14 +348,31 @@ class _ListenStatsPageState extends State<ListenStatsPage> {
+           ],
+           if (hint != null) ...[
+             const Gap(AppSpacing.xs),
+-            Text(
+-              hint,
+-              maxLines: 1,
+-              overflow: TextOverflow.ellipsis,
+-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+-                color: fg.withValues(alpha: 0.55),
++            // 【Halcyon 文字底衬】背景图模式下 hint 沉进一条更亮更糊的
++            // 模糊徽条（对应 Halcyon 仪表盘 tile 的副文本底带）；关闭时
++            // 保持上游原样。halcyonGlassEnabled 内部 watch 背景开关，
++            // 切换设置时自动重建。
++            if (halcyonGlassEnabled(context))
++              HalcyonGlassFooterStrip(
++                borderRadius: BorderRadius.circular(8),
++                child: Text(
++                  hint,
++                  maxLines: 1,
++                  overflow: TextOverflow.ellipsis,
++                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
++                    color: fg.withValues(alpha: 0.75),
++                  ),
++                ),
++              )
++            else
++              Text(
++                hint,
++                maxLines: 1,
++                overflow: TextOverflow.ellipsis,
++                style: Theme.of(context).textTheme.labelSmall?.copyWith(
++                  color: fg.withValues(alpha: 0.55),
++                ),
+               ),
+-            ),
+           ],
+         ],
+       ),
+diff --git a/lib/widgets/halcyon_glass.dart b/lib/widgets/halcyon_glass.dart
+new file mode 100644
+index 0000000..80a113e
+--- /dev/null
++++ b/lib/widgets/halcyon_glass.dart
+@@ -0,0 +1,311 @@
++/// Halcyon 风格毛玻璃容器（液态玻璃/高斯模糊/磨砂底）。
++///
++/// 视觉规范逐项取自 Halcyon（Kifranei/Halcyon）的底栏玻璃体系
++/// `ui/components/GlassEffect.kt`：
++///  - 磨砂底色：亮色 White@0.38 / 暗色 #111114@0.42（LiquidGlass 档）
++///  - 内缘高光：亮色 alpha 0.18 / 暗色 alpha 0.10（玻璃上沿反光）
++///  - 模糊：高斯 sigma 默认 18（Halcyon 的 blurRadiusDp=6 是 RenderEffect
++///    的半径口径，与 Flutter ImageFilter.blur 的 sigma 不是一个量纲；18 在
++///    Flutter 侧的观感与其 6dp 接近，可后续按真机微调）
++///  - 「液态玻璃」的边缘折射：Flutter 无 Miuix lens 着色器，这里用
++///    **上缘高光渐变 + 内描边**近似（顶部亮、往下衰减 + 1px 内描边，
++///    观感接近 iOS 液态玻璃的边缘反光）
++///
++/// 设计目标：**自包含**（只依赖 Flutter SDK 的 widgets/dart:ui），上游
++/// md3Music 任何文件都不 import 它，只有我们钩子处的 2~3 行引用——上游
++/// 更新时补丁冲突面最小。
++import 'dart:ui' show ImageFilter;
++
++import 'package:flutter/material.dart';
++import 'package:provider/provider.dart';
++
++import '../providers/theme_provider.dart';
++
++/// 背景图模式下的**全局卡片玻璃**分档透明度（app.dart 的
++/// `_applyBackgroundOverrides` 按档注入 colorScheme.surfaceContainer 族）。
++///
++/// 为什么是主题层而不是逐卡 BackdropFilter：壁纸已由 AppBackground 全局
++/// 预模糊（ImageFiltered），半透明卡片透出的就是毛玻璃背景——列表里几十
++/// 张卡都套 BackdropFilter 的开销不可接受，纯色 alpha 则零开销。
++/// 分档沿用 M3 surface 族语义：越浮起（High/Highest）越实，保证弹层、
++/// 菜单等悬浮件的可读性；对齐 Halcyon `frostedCardColor` 的 defaultAlpha
++/// 0.42 量级（中间档 0.52），真机观感可整组微调。
++const double kHalcyonGlassSurfaceLowestAlpha = 0.40;
++const double kHalcyonGlassSurfaceLowAlpha = 0.46;
++const double kHalcyonGlassSurfaceAlpha = 0.52;
++const double kHalcyonGlassSurfaceHighAlpha = 0.58;
++const double kHalcyonGlassSurfaceHighestAlpha = 0.66;
++
++/// 底栏「滚动隐藏」总开关：主页面列表下滑浏览（手指上滑）时玻璃底栏下沉
++/// 让位内容，下滑回看时升起（Halcyon / YouTube Music 同款行为）。
++/// false 时恢复上游行为（底栏常驻，仅二级页面 route 驱动收起）。
++const bool kHalcyonScrollHideChrome = true;
++
++/// 背景图模式开启才渲染玻璃效果；关闭时原样返回 [child]（零痕迹）。
++///
++/// 玻璃的本质是「透出预模糊壁纸」——壁纸不存在时玻璃只剩一层怪异的
++/// 半透明色斑，因此以背景图开关作为总闸，调用方无需各自判断。
++bool halcyonGlassEnabled(BuildContext context) =>
++    context.watch<ThemeProvider>().useBackgroundImage;
++
++/// 玻璃档位：磨砂（毛玻璃）/ 液态玻璃（磨砂 + 更强边缘反光）。
++enum HalcyonGlassStyle { frosted, liquid }
++
++class HalcyonGlassContainer extends StatelessWidget {
++  const HalcyonGlassContainer({
++    super.key,
++    required this.child,
++    this.borderRadius = BorderRadius.zero,
++    this.blurSigma = 18.0,
++    this.style = HalcyonGlassStyle.liquid,
++    this.fallbackColor,
++    this.padding,
++  });
++
++  final Widget child;
++  final BorderRadius borderRadius;
++
++  /// 高斯模糊 sigma（BackdropFilter/ImageFilter.blur）。
++  final double blurSigma;
++
++  final HalcyonGlassStyle style;
++
++  /// BackdropFilter 在部分低端机/旧 WebView 场景可能被禁用（EngineFlags），
++  /// 届时退化为纯色容器，保证可用性。
++  final Color? fallbackColor;
++
++  final EdgeInsetsGeometry? padding;
++
++  @override
++  Widget build(BuildContext context) {
++    final theme = Theme.of(context);
++    final isDark = theme.brightness == Brightness.dark;
++    // Halcyon GlassEffect.kt bottomBarGlassContainerColor：
++    // LiquidGlass 档 亮 0.38 / 暗 0.42；底色亮白 / 暗 #111114。
++    final tint = isDark
++        ? const Color(0xFF111114).withValues(alpha: 0.42)
++        : Colors.white.withValues(alpha: 0.38);
++    // bottomBarGlassHighlightAlpha：LiquidGlass 档 亮 0.18 / 暗 0.10。
++    final highlightAlpha = isDark ? 0.10 : 0.18;
++    final effectiveTint = fallbackColor ?? tint;
++
++    // 高光渐变：顶部最强、快速衰减到底部（玻璃上缘反光）。liquid 档更亮。
++    // 注意：BoxDecoration 的 color 与 gradient 互斥（assert），因此高光
++    // 不走第二层，而是把顶部颜色往白色插值 highlightAlpha 后做成两段
++    // gradient —— 顶部=带高光的 tint，底部=纯 tint。
++    final Widget content = Padding(
++      padding: padding ?? EdgeInsets.zero,
++      child: child,
++    );
++
++    // 顶部色 = tint 向白混合 highlightAlpha（模拟玻璃上缘反光叠在底色上）
++    final topColor =
++        Color.lerp(effectiveTint, Colors.white, highlightAlpha)!;
++    final bottomColor = effectiveTint;
++
++    return ClipRRect(
++      borderRadius: borderRadius,
++      // 描边画在模糊层之上：DecoratedBox(foreground) 顺序 = blur → tint → stroke
++      child: BackdropFilter(
++        filter: ImageFilter.blur(
++          sigmaX: blurSigma,
++          sigmaY: blurSigma,
++          tileMode: TileMode.mirror,
++        ),
++        child: Container(
++          decoration: BoxDecoration(
++            borderRadius: borderRadius,
++            // 液态玻璃：顶部高光渐变（融合进 tint），frosted 档无渐变纯 tint。
++            gradient: style == HalcyonGlassStyle.liquid
++                ? LinearGradient(
++                    begin: Alignment.topCenter,
++                    end: Alignment.center,
++                    colors: [topColor, bottomColor],
++                    stops: const [0.0, 1.0],
++                  )
++                : null,
++            color: style == HalcyonGlassStyle.liquid ? null : effectiveTint,
++            border: Border.all(
++              color: Colors.white.withValues(
++                alpha: style == HalcyonGlassStyle.liquid
++                    ? highlightAlpha * 0.9
++                    : highlightAlpha * 0.5,
++              ),
++              width: 1.0,
++            ),
++          ),
++          child: content,
++        ),
++      ),
++    );
++  }
++}
++
++/// Halcyon 仪表盘 tile 同构的**真模糊玻璃卡**（对应 Halcyon
++/// `frostedCardModifier`：Miuix textureBlur 72f/64f + 模糊开启时卡体
++/// Color.Transparent）。与 [HalcyonGlassContainer] 的区别：卡片档 tint
++/// 更淡（模糊感为主）、自带 [footer] 副文本底衬槽。
++///
++/// [footer] 是 Halcyon tile 的「文字底模糊底层效果」：副文本所在的一条
++/// 独立横带，比卡体更亮、更糊（内部再叠一层 BackdropFilter 与卡体模糊
++/// 累加），上缘一条内缘高光分隔线。结构与截图 tile 一致：标题内容在
++/// 卡体，副文本落在 footer 带。
++///
++/// 适用场景：屏幕上数量有限的大卡（入口 tile / 概览卡）。长列表行卡请
++/// 走主题层的全局半透明（见 kHalcyonGlassSurface*Alpha），不要逐行套
++/// BackdropFilter。
++class HalcyonGlassCard extends StatelessWidget {
++  const HalcyonGlassCard({
++    super.key,
++    required this.child,
++    this.footer,
++    this.borderRadius = const BorderRadius.all(Radius.circular(16)),
++    this.blurSigma = 30.0,
++    this.padding = const EdgeInsets.all(16),
++    this.footerPadding = const EdgeInsets.symmetric(
++      horizontal: 16,
++      vertical: 10,
++    ),
++  });
++
++  final Widget child;
++
++  /// 底部副文本槽：自动获得「更亮更糊」的底衬条。
++  final Widget? footer;
++
++  final BorderRadius borderRadius;
++
++  /// 卡体模糊 sigma。Halcyon 卡片档 textureBlur 72f（暗）观感比底栏
++  /// （6dp/18sigma）强得多，Flutter 侧取 30 起步，真机微调。
++  final double blurSigma;
++
++  final EdgeInsetsGeometry padding;
++  final EdgeInsetsGeometry footerPadding;
++
++  @override
++  Widget build(BuildContext context) {
++    final theme = Theme.of(context);
++    final isDark = theme.brightness == Brightness.dark;
++    // 卡片档 tint：Halcyon 模糊开启时卡体全透（靠 blend 混色），Flutter
++    // 无对应混合着色器，用淡 tint 保底色相；比底栏档（0.42）更透。
++    final tint = isDark
++        ? const Color(0xFF111114).withValues(alpha: 0.30)
++        : Colors.white.withValues(alpha: 0.30);
++    // footer 比 card 体更亮：暗色往白提（发白磨砂带），亮色往白再提一点。
++    final footerTint = isDark
++        ? const Color(0xFF111114).withValues(alpha: 0.30 + 0.10)
++        : Colors.white.withValues(alpha: 0.30 + 0.14);
++    final highlightAlpha = isDark ? 0.10 : 0.18;
++
++    return ClipRRect(
++      borderRadius: borderRadius,
++      child: BackdropFilter(
++        filter: ImageFilter.blur(
++          sigmaX: blurSigma,
++          sigmaY: blurSigma,
++          tileMode: TileMode.mirror,
++        ),
++        child: Container(
++          decoration: BoxDecoration(
++            borderRadius: borderRadius,
++            border: Border.all(
++              color: Colors.white.withValues(alpha: highlightAlpha * 0.9),
++              width: 1.0,
++            ),
++          ),
++          child: Column(
++            mainAxisSize: MainAxisSize.min,
++            crossAxisAlignment: CrossAxisAlignment.stretch,
++            children: [
++              // 卡体：顶部高光渐变（同 HalcyonGlassContainer 的 liquid 观感）
++              Container(
++                decoration: BoxDecoration(
++                  gradient: LinearGradient(
++                    begin: Alignment.topCenter,
++                    end: Alignment.center,
++                    colors: [
++                      Color.lerp(tint, Colors.white, highlightAlpha)!,
++                      tint,
++                    ],
++                  ),
++                ),
++                padding: padding,
++                child: child,
++              ),
++              if (footer != null)
++                // footer 底衬：更亮 tint + 再叠一层模糊（与卡体累加 → 更糊）
++                Container(
++                  decoration: BoxDecoration(
++                    color: footerTint,
++                    border: Border(
++                      top: BorderSide(
++                        color: Colors.white.withValues(
++                          alpha: highlightAlpha * 0.9,
++                        ),
++                        width: 1.0,
++                      ),
++                    ),
++                  ),
++                  child: BackdropFilter(
++                    filter: ImageFilter.blur(
++                      sigmaX: blurSigma * 1.3,
++                      sigmaY: blurSigma * 1.3,
++                      tileMode: TileMode.mirror,
++                    ),
++                    child: Padding(
++                      padding: footerPadding,
++                      child: footer!,
++                    ),
++                  ),
++                ),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++}
++
++/// 独立的「文字底模糊底层」横带：可单独套在任意卡片内副文本（hint/
++/// summary）的下面，不需要整卡换成 [HalcyonGlassCard]。
++///
++/// 关闭背景图模式时直接返回 [child]（halcyonGlassEnabled 总闸）。
++/// 底衬材质：暗色白纱 / 亮色白提亮，自带水平内边距归零（由调用方控制
++/// 外形，条带本身铺满父级给的宽度）。
++class HalcyonGlassFooterStrip extends StatelessWidget {
++  const HalcyonGlassFooterStrip({
++    super.key,
++    required this.child,
++    this.padding = const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
++    this.borderRadius,
++  });
++
++  final Widget child;
++  final EdgeInsetsGeometry padding;
++  final BorderRadius? borderRadius;
++
++  @override
++  Widget build(BuildContext context) {
++    if (!halcyonGlassEnabled(context)) return child;
++    final isDark = Theme.of(context).brightness == Brightness.dark;
++    final tint = isDark
++        ? Colors.white.withValues(alpha: 0.10)
++        : Colors.white.withValues(alpha: 0.35);
++    final result = Container(
++      decoration: BoxDecoration(
++        color: tint,
++        borderRadius: borderRadius,
++      ),
++      child: BackdropFilter(
++        filter: ImageFilter.blur(
++          sigmaX: 24,
++          sigmaY: 24,
++          tileMode: TileMode.mirror,
++        ),
++        child: Padding(padding: padding, child: child),
++      ),
++    );
++    if (borderRadius == null) return result;
++    return ClipRRect(borderRadius: borderRadius!, child: result);
++  }
++}
