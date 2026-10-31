@@ -104,6 +104,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      # 6.5 中和 lint NewApi：上游 styles.xml 的 windowLayoutInDisplayCutoutMode
+      # 需要 API 27 而 minSdk 24，新 lint 版本把 NewApi 当 error 挂掉 release 构建
+      # （v1 时 lint 未报，CI 工具链版本漂移后开始报）。注入 tools:targetApi 声明
+      # 目标 API，运行时行为完全不变（shortEdges 沉浸逻辑保留，vivo 岛适配不受影响）。
+      - name: Neutralize lint NewApi (cutoutMode API 27 vs minSdk 24)
+        if: steps.check.outputs.build == 'true'
+        run: |
+          for f in android/app/src/main/res/values/styles.xml \
+                   android/app/src/main/res/values-night/styles.xml; do
+            if [ -f "$f" ]; then
+              sed -i 's|<resources>|<resources xmlns:tools="http://schemas.android.com/tools">|' "$f"
+              sed -i 's|<item name="android:windowLayoutInDisplayCutoutMode">|<item name="android:windowLayoutInDisplayCutoutMode" tools:targetApi="27">|g' "$f"
+              echo "neutralized: $f"
+            fi
+          done
+
       # 7. 构建环境（与上游 main.yml 同链路：JDK17 + android-36 + Flutter stable）
       - name: Set up JDK 17
         if: steps.check.outputs.build == 'true'
