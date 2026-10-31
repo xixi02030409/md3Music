@@ -13,6 +13,7 @@ import '../../providers/kugou_provider.dart';
 import '../../providers/listen_stats_provider.dart';
 import '../../providers/player_provider.dart';
 import '../../services/kugou_api/kugou_models.dart';
+import '../../widgets/halcyon_glass.dart';
 import '../../widgets/song_list_item.dart';
 import '../artist/artist_detail_page.dart';
 import '../player/secondary_mini_player.dart';
@@ -347,14 +348,31 @@ class _ListenStatsPageState extends State<ListenStatsPage> {
           ],
           if (hint != null) ...[
             const Gap(AppSpacing.xs),
-            Text(
-              hint,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: fg.withValues(alpha: 0.55),
+            // 【Halcyon 文字底衬】背景图模式下 hint 沉进一条更亮更糊的
+            // 模糊徽条（对应 Halcyon 仪表盘 tile 的副文本底带）；关闭时
+            // 保持上游原样。halcyonGlassEnabled 内部 watch 背景开关，
+            // 切换设置时自动重建。
+            if (halcyonGlassEnabled(context))
+              HalcyonGlassFooterStrip(
+                borderRadius: BorderRadius.circular(8),
+                child: Text(
+                  hint,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: fg.withValues(alpha: 0.75),
+                  ),
+                ),
+              )
+            else
+              Text(
+                hint,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: fg.withValues(alpha: 0.55),
+                ),
               ),
-            ),
           ],
         ],
       ),

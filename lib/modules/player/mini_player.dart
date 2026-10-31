@@ -1,4 +1,6 @@
 import 'dart:math' as math;
+// 【Halcyon 迷你条】ImageFilter.blur（BackdropFilter 用）
+import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/gestures.dart';
 import 'package:dpad/dpad.dart';
@@ -42,6 +44,30 @@ const double kMiniPlayerBaseSideInset = 4.0;
 /// `padding.bottom=0` 而 `systemGestureInsets.bottom=20`），只靠 inset 会让
 /// 迷你条在过渡帧抖动，故钉一个不依赖 inset 的下限。
 const double kMiniPlayerMinBottomClearance = 12.0;
+
+/// 坞位在场时，迷你条内容行相对「玻璃底栏胶囊顶沿」的额外抬升（dp）。
+///
+/// 【Halcyon 底栏】`extendBody: true` 后 body 延伸到底栏槽位后面，而槽位由
+/// `Scaffold` 画在 body 之上：坞位净空端点若仍是 0，内容行会被悬浮玻璃底栏
+/// 盖住。端点改为 `slotHeight − alone.bottom + 本值`：slotHeight 含手势条净空，
+/// 先减掉自身底部净空（≈底栏胶囊自己承担的 gesture 区），再加
+/// 底栏胶囊下边距 10（`responsive_layout` 悬浮胶囊 EdgeInsets 的 bottom）
+/// + 迷你条与底栏的视觉间距 8。改底栏悬浮胶囊边距时必须同步本值。
+const double kMiniPlayerDockLift = 8.0;
+
+/// 【勘误 2026-10-31】上方旧文档的端点口径 `slotHeight - alone.bottom + 18`
+/// 作废，两处错误：①多减 alone.bottom（手势机上 ≈ 手势条 inset 48px+），
+/// 内容行沉进玻璃胶囊内被盖住——alone.bottom 是「自身即屏底」口径的圆角
+/// 防护，与坞位抬升无关；②当时 slotHeight 不含胶囊下边距 10（Slot 的
+/// Clip.hardEdge 按它裁切，胶囊悬浮边距被整段裁掉，悬浮从未真正生效）。
+/// 新口径：端点 = slotHeight（底栏本体真实总高，含下边距，即胶囊顶沿到
+/// 屏底距离）+ 本值（纯视觉间距 8）。
+
+/// 【Halcyon 悬浮胶囊】迷你条玻璃胶囊的左右边距（dp），与底栏悬浮胶囊的
+/// 左右 12 对齐（responsive_layout 底栏 Padding 的 horizontal）。底栏收起
+/// 时随收起进度收拢为 0——迷你条落为「贴边屏底」的自身形态，横向圆角
+/// 避让由内容行自身的 lerp horizontal（base → alone.horizontal）承担。
+const double kMiniPlayerCapsuleSideMargin = 12.0;
 
 /// 圆角反解出的左右内边距上限（dp），防止异常大的上报值把内容挤成一条。
 const double kMiniPlayerMaxHorizontalClearance = 24.0;
@@ -97,26 +123,32 @@ MiniPlayerCornerClearance resolveMiniPlayerCornerClearanceFrom({
   return (bottom: bottom, horizontal: horizontal);
 }
 
-/// 在「底栏完整在场」（底 0 / 左右基础值）与「自身即屏幕最底部」（[alone]）两套
-/// 口径之间，按底栏收起进度 [t] **线性插值**。
+/// 在「底栏完整在场」（底 [dockedBottom] / 左右基础值）与「自身即屏幕最底部」
+/// （[alone]）两套口径之间，按底栏收起进度 [t] **线性插值**。
 ///
 /// 为什么是线性而不是几何反解：两段位移（底栏槽位收缩、净空补回）都由同一个 `t`
 /// 驱动，内容绝对位移 = 槽位高 − 净空，线性插值与底栏运动逐帧同源，读起来是一个
 /// 动作。旧实现按 bool 二选一，转场末帧会突然多出十几到几十 dp 的净空，看起来
 /// 就是内容跳一下。
 ///
+/// [dockedBottom] 是坞位在场时的底部净空端点：【Halcyon 底栏】extendBody 后
+/// 迷你条要自行抬升到玻璃底栏上方，端点不再是 0（见 [kMiniPlayerDockLift]）；
+/// 缺省 0 保持既有调用点与测试的旧口径（坞位不存在 / 横屏侧栏时调用方传 0，
+/// 插值退化为旧行为）。
+///
 /// [t] 的取值口径（含坞位不存在 / 横屏侧栏时的兜底）见
 /// `_MiniPlayerState._collapseT`。
 MiniPlayerCornerClearance lerpMiniPlayerClearance({
   required MiniPlayerCornerClearance alone,
   required double t,
+  double dockedBottom = 0.0,
 }) {
   if (t >= 1.0) return alone;
   if (t <= 0.0) {
-    return (bottom: 0.0, horizontal: kMiniPlayerBaseSideInset);
+    return (bottom: dockedBottom, horizontal: kMiniPlayerBaseSideInset);
   }
   return (
-    bottom: alone.bottom * t,
+    bottom: dockedBottom + (alone.bottom - dockedBottom) * t,
     horizontal:
         kMiniPlayerBaseSideInset +
         (alone.horizontal - kMiniPlayerBaseSideInset) * t,
@@ -411,6 +443,11 @@ class _MiniPlayerState extends State<MiniPlayer>
   // 上滑累计距离 / 是否已确认展开手势 / 完整展开距离（MiniPlayer 顶端 Y）
   double _dragDistance = 0.0;
   bool _dragActivated = false;
+
+  // 最近一帧留白层回写的「玻璃外净空带」高度：悬浮胶囊形态下 box 含玻璃外
+  // 的透明净空带，可见胶囊底端 = box 底端 - 本值（_onRawDown 反解 morph
+  // 起点/拖拽锚点用）。builder 逐帧回写，初值 0（首次手势前 build 必已跑）。
+  double _visualBottomInset = 0.0;
   double _miniTopY = 0.0;
   // 迷你条底端 Y：与 [_miniTopY] 同一次测量（同为锚点空间），
   // 供双向展开面板反解条高 —— p=0 时面板必须恰好等于迷你条矩形。
@@ -447,7 +484,12 @@ class _MiniPlayerState extends State<MiniPlayer>
     _miniTopY =
         box?.localToGlobal(Offset.zero, ancestor: _scaleAnchor).dy ?? 0.0;
     // 底端用同一个 box 的布局高度（与 localToGlobal 同处锚点空间，坐标系一致）。
-    _miniBottomY = box == null ? 0.0 : _miniTopY + box.size.height;
+    // 【Halcyon 悬浮形态】box 含玻璃外的透明净空带，可见胶囊底端要扣掉
+    // _visualBottomInset（最近一帧留白层回写），morph 起点/面板反解才与
+    // 视觉胶囊对齐（p=0 时面板恰好等于胶囊矩形）。
+    _miniBottomY = box == null
+        ? 0.0
+        : _miniTopY + box.size.height - _visualBottomInset;
   }
 
   void _onRawMove(PointerMoveEvent e) {
@@ -677,12 +719,24 @@ class _MiniPlayerState extends State<MiniPlayer>
     // - 终态净空按 aspect 读 MediaQuery（`viewPaddingOf` + `displayCornerRadiiOf`）：
     //   同期 `_withAnimatedBottomInset` 每帧都在改 `padding.bottom`，全量
     //   `MediaQuery.of` 依赖等于第二个逐帧重建源。
-    final collapse = BottomChromeScope.collapseStateOf(context).animation ??
+    final collapseState = BottomChromeScope.collapseStateOf(context);
+    final collapse = collapseState.animation ??
         const AlwaysStoppedAnimation<double>(1.0);
     final alone = resolveMiniPlayerCornerClearanceFrom(
       viewPaddingBottom: MediaQuery.viewPaddingOf(context).bottom,
       cornerRadii: MediaQuery.displayCornerRadiiOf(context),
     );
+    // 坞位净空端点：【Halcyon 底栏】extendBody 后 body 延伸到槽位后面，坞位
+    // 在场时内容行必须自行抬升到玻璃底栏胶囊上方（端点 0 会被后画的底栏盖住）。
+    // 端点 = slotHeight − 自身底部净空 + 抬升量；坞位不存在（横屏 / 已收起 /
+    // 二级路由无 scope）时退回 0，插值退化为引入前的旧行为。
+    // 【勘误 2026-10-31】端点 = slotHeight（底栏本体真实总高，含胶囊下
+    // 边距 10，即胶囊顶沿高度）+ kMiniPlayerDockLift（视觉间距 8）。旧式
+    // `slotHeight - alone.bottom + 18` 多减了 alone.bottom，内容行沉进胶囊
+    // 被盖住，见 kMiniPlayerDockLift 的勘误说明。
+    final double dockedBottom = collapseState.hasBottomChrome
+        ? collapseState.slotHeight + kMiniPlayerDockLift
+        : 0.0;
     // 底色在 build 里算一次、由 builder 闭包捕获：主题/壁纸开关变化才重算，
     // 逐帧零分配。
     final background = resolveMiniPlayerBackground(
@@ -736,22 +790,44 @@ class _MiniPlayerState extends State<MiniPlayer>
               alone,
             ),
             builder: (context, child) {
+              final t = _collapseT(context, collapse);
               final clearance = lerpMiniPlayerClearance(
                 alone: alone,
-                t: _collapseT(context, collapse),
+                t: t,
+                dockedBottom: dockedBottom,
               );
-              return DecoratedBox(
-                // 底色画在这一层（含底部净空区）：净空带与条体同色，不露白边。
-                // 取值与展开面板的过渡态底色同源（resolveMiniPlayerBackground），
-                // p=0 时面板窗口恰好压在本条上，颜色一致才看不出「起点色差」。
-                decoration: BoxDecoration(color: background),
-                child: Padding(
-                  // 底部净空：自身即屏幕最底部时（二级路由 / 横屏侧栏 /
-                  // 导航栏隐藏），同时防住屏幕圆角裁切与系统手势条；下方还压着
-                  // NavigationBar 时沿用原 SafeArea(bottom: true) 口径
-                  // （Scaffold 已移除 body 的 bottom padding，实测为 0，两者等价）。
-                  padding: EdgeInsets.only(bottom: clearance.bottom),
-                  child: child,
+              // 供 _onRawDown 反解可见胶囊底端：玻璃只包内容行，净空带在玻璃
+              // 外，box 矩形 ≠ 视觉矩形（morph 起点/拖拽锚点按可见胶囊算）。
+              _visualBottomInset = clearance.bottom;
+              // 【Halcyon 迷你条·悬浮胶囊形态】玻璃只包内容行（全圆角 20 胶囊），
+              // 底部净空带移到玻璃外：坞位在场时内容行悬在玻璃底栏胶囊顶沿上方
+              // 8dp（kMiniPlayerDockLift），与底栏之间的缝透出列表内容（只被
+              // 底栏玻璃模糊）——Halcyon Floating 的签名视觉。净空带本身仍属
+              // 本条命中区（Listener 在最外，点缝照样展开播放页）。侧边距与
+              // 底栏胶囊对齐（kMiniPlayerCapsuleSideMargin），底栏收起时随 t
+              // 收拢为 0（迷你条落为贴边屏底的自身形态）。
+              final side =
+                  kMiniPlayerCapsuleSideMargin * (1.0 - t).clamp(0.0, 1.0);
+              return Padding(
+                padding: EdgeInsets.only(
+                  left: side,
+                  right: side,
+                  bottom: clearance.bottom,
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(20),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                    child: DecoratedBox(
+                      // 磨砂 tint：亮 White@0.38 / 暗 #111114@0.42（Halcyon 参数）。
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).brightness == Brightness.dark
+                            ? const Color(0xFF111114).withValues(alpha: 0.42)
+                            : Colors.white.withValues(alpha: 0.38),
+                      ),
+                      child: child,
+                    ),
+                  ),
                 ),
               );
             },

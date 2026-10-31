@@ -100,6 +100,7 @@ import 'modules/library/library_page.dart';
 import 'modules/launchpad/launchpad_page.dart';
 import 'modules/login/login_page.dart';
 import 'widgets/app_animation.dart';
+import 'widgets/halcyon_glass.dart';
 import 'modules/onboarding/onboarding_page.dart';
 import 'modules/onboarding/user_agreement_page.dart';
 import 'modules/personal_fm/personal_fm_page.dart';
@@ -1078,6 +1079,32 @@ class _AppViewState extends State<_AppView> {
     final cs = base.colorScheme;
     final withTransparentSurfaces = base.copyWith(
       scaffoldBackgroundColor: Colors.transparent,
+      // 【Halcyon 玻璃卡·全局】背景图模式下全部卡片半透明化：壁纸已由
+      // AppBackground 全局预模糊（ImageFiltered），半透明卡透出的就是
+      // 毛玻璃背景——这就是 Halcyon 截图里"卡片透出模糊壁纸"的效果，
+      // 而纯色 alpha 零渲染开销（列表几十张卡逐个 BackdropFilter 不可
+      // 接受）。surfaceContainer 族是本 app 自绘卡片的取色主源，一次
+      // 带 alpha 全部变玻璃；分档沿用 M3 语义（越浮起越实），保证菜单/
+      // 弹层可读性。dialog/drawer/bottomSheet 在下方已显式钉近实色，
+      // 引用的是改造前的实色 cs，不受影响。
+      colorScheme: cs.copyWith(
+        surfaceContainerLowest: cs.surfaceContainerLowest
+            .withValues(alpha: kHalcyonGlassSurfaceLowestAlpha),
+        surfaceContainerLow:
+            cs.surfaceContainerLow.withValues(alpha: kHalcyonGlassSurfaceLowAlpha),
+        surfaceContainer:
+            cs.surfaceContainer.withValues(alpha: kHalcyonGlassSurfaceAlpha),
+        surfaceContainerHigh:
+            cs.surfaceContainerHigh.withValues(alpha: kHalcyonGlassSurfaceHighAlpha),
+        surfaceContainerHighest: cs.surfaceContainerHighest
+            .withValues(alpha: kHalcyonGlassSurfaceHighestAlpha),
+      ),
+      cardTheme: base.cardTheme.copyWith(
+        // 玻璃卡不要阴影（阴影画在透明卡上会出现"悬浮暗影"脏边）
+        elevation: 0,
+        color: cs.surfaceContainer.withValues(alpha: kHalcyonGlassSurfaceAlpha),
+        surfaceTintColor: Colors.transparent,
+      ),
       appBarTheme: base.appBarTheme.copyWith(
         backgroundColor: Colors.transparent,
         surfaceTintColor: Colors.transparent,

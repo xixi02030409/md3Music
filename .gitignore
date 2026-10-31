@@ -1,0 +1,8 @@
+# 本地工具产物，绝不入库（.gh_token 曾差点随 git add -A 推上远端）
+.gh_token
+ci_*.log
+ci_*.txt
+build*-log*.txt
+build2-log.txt
+job-log.txt
+fmt*.log

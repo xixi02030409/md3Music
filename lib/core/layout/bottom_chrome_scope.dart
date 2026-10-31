@@ -32,6 +32,7 @@ import 'package:flutter/widgets.dart';
 typedef BottomChromeState = ({
   Animation<double>? animation,
   bool hasBottomChrome,
+  double slotHeight,
 });
 
 class BottomChromeScope extends InheritedWidget {
@@ -40,6 +41,7 @@ class BottomChromeScope extends InheritedWidget {
     required this.hasBottomChrome,
     this.bottomChromeCollapse = 0.0,
     this.collapseProgress,
+    this.slotHeight = 0.0,
     required super.child,
   });
 
@@ -60,6 +62,19 @@ class BottomChromeScope extends InheritedWidget {
   /// （横屏侧栏 / 已收起）或无祖先时，消费方按「自身即屏幕最底部」（t = 1）
   /// 处理，与 [chromeCollapseOf] 的兜底口径一致。
   final Animation<double>? collapseProgress;
+
+  /// 底栏槽位总高（含系统手势条净空；与 `BottomChromeSlot.slotHeight` 同源）。
+  ///
+  /// **为什么迷你条需要它**：【Halcyon 底栏】开启 `extendBody` 后 body 延伸到
+  /// 槽位后面，而槽位由 `Scaffold` 画在 body 之上 —— 底部常驻迷你条若不自行
+  /// 抬升，内容行会被悬浮玻璃底栏盖住。坞位在场时（[hasBottomChrome]），迷你条
+  /// 把「坞位净空端点」从 0 抬到 `slotHeight − 自身底部净空 + 抬升量`
+  /// （见 `mini_player.dart` 的 `kMiniPlayerDockLift`），内容行恰好落在玻璃底栏
+  /// 胶囊上方；坞位不存在（横屏侧栏 / 已收起 / 无 scope 祖先）时本字段无意义，
+  /// 消费方按 0 处理（净空端点退回 `alone` 口径，与引入本字段前逐值一致）。
+  ///
+  /// 取值口径：竖屏紧凑布局 = 槽位总高；横屏侧栏 / 沉浸 = 0。
+  final double slotHeight;
 
   /// 读取当前子树下方是否有底部 chrome；无 scope 祖先时返回 `false`。
   ///
@@ -98,11 +113,13 @@ class BottomChromeScope extends InheritedWidget {
     return (
       animation: scope?.collapseProgress,
       hasBottomChrome: scope?.hasBottomChrome ?? false,
+      slotHeight: scope?.slotHeight ?? 0.0,
     );
   }
 
   @override
   bool updateShouldNotify(BottomChromeScope oldWidget) =>
       oldWidget.hasBottomChrome != hasBottomChrome ||
-      oldWidget.bottomChromeCollapse != bottomChromeCollapse;
+      oldWidget.bottomChromeCollapse != bottomChromeCollapse ||
+      oldWidget.slotHeight != slotHeight;
 }
