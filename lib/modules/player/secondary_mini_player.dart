@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:ui' show PathMetric;
+import 'dart:ui' show ImageFilter, PathMetric;
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/gestures.dart';
@@ -1387,10 +1387,15 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
       expansion,
       layerWillDraw: PlayerCoverMorphBus.instance.coverLayerWillDraw,
     );
-    final background = resolveMiniPlayerBackground(
-      cs,
-      useBackgroundImage: useBackgroundImage,
-    );
+    // 【Halcyon 二级胶囊玻璃】壁纸档：底色改用 Halcyon 玻璃 tint
+    // （亮 White@0.38 / 暗 #111114@0.42，与一级常驻条玻璃胶囊同档——
+    // 旧值 cs.surface@0.2 太薄，胶囊内文字直接叠在壁纸上，可读性差）。
+    // 非壁纸档保持实底（resolveMiniPlayerBackground 的 surface 实色）。
+    final background = useBackgroundImage
+        ? (Theme.of(context).brightness == Brightness.dark
+            ? const Color(0xFF111114).withValues(alpha: 0.42)
+            : Colors.white.withValues(alpha: 0.38))
+        : resolveMiniPlayerBackground(cs, useBackgroundImage: false);
     // 底色随交接淡出：alpha 按 chrome 缩放（p=0 时 chrome=1 → 与原值逐位相等）。
     final chromeBackground = chrome >= 1.0
         ? background
@@ -1486,12 +1491,19 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
               openFullPlayer(context, scene: _captureMorphScene());
             }
           },
-          child: Material(
+          child: _secondaryGlassWrap(
+            // 【Halcyon 二级胶囊玻璃】壁纸档外包 BackdropFilter：模糊身后
+            // 列表内容（extendBody 下列表滚到胶囊后面）。sigma 随 chrome
+            // 交接淡出到 0（p=1 整条不可见时模糊同步消失，不残影）。
+            // 非壁纸档原样透传（实底 Material 不糊）。
+            useBackgroundImage: useBackgroundImage,
+            chrome: chrome,
+            radius: radius,
+            child: Material(
             key: _pillKey,
             elevation: 0,
-            // 底色与常驻条同源取色（复用 resolveMiniPlayerBackground），两形态切换零色差；
-            // 壁纸档 0.2 是 2026-10-10 确认的决定，辨识度由胶囊既有投影（下方 shadow）承担。
-            // 展开交接时 alpha 按 [chrome] 缩放（见上方 chromeBackground）。
+            // 底色与常驻条同源取色；壁纸档 tint 已在上方 background 处
+            // 升级为 Halcyon 玻璃档（0.38/0.42），alpha 仍按 [chrome] 缩放。
             color: chromeBackground,
             borderRadius: BorderRadius.circular(radius),
             clipBehavior: Clip.antiAlias,
@@ -1564,6 +1576,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
         ),
         ),
       ),
+      ),
     );
   }
 
@@ -1583,6 +1596,28 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
       onPointerUp: _onPullUp,
       onPointerCancel: _onPullCancel,
       child: child,
+    );
+  }
+
+  /// 【Halcyon 二级胶囊玻璃】壁纸档给胶囊外包 BackdropFilter 玻璃层。
+  ///
+  /// sigma 随 [chrome]（展开交接曲线）逐帧缩放：p=0 全量模糊（sigma 18），
+  /// p=1 整条不可见时模糊同步消失，不残留玻璃框。非壁纸档（useBackgroundImage
+  /// =false）原样透传 child——实底 Material 本就不需要模糊，避免无谓开销。
+  /// 模糊区域由 ClipRRect 按胶囊圆角裁剪，与 Material 的 antiAlias 裁剪同心。
+  Widget _secondaryGlassWrap({
+    required bool useBackgroundImage,
+    required double chrome,
+    required double radius,
+    required Widget child,
+  }) {
+    if (!useBackgroundImage) return child;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(radius),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 18 * chrome, sigmaY: 18 * chrome),
+        child: child,
+      ),
     );
   }
 

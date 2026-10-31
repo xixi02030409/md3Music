@@ -99,10 +99,10 @@ index 74f3669..88c007b 100644
 +      oldWidget.slotHeight != slotHeight;
  }
 diff --git a/lib/core/layout/responsive_layout.dart b/lib/core/layout/responsive_layout.dart
-index bd683dd..a7d8fdd 100644
+index bd683dd..1defbc8 100644
 --- a/lib/core/layout/responsive_layout.dart
 +++ b/lib/core/layout/responsive_layout.dart
-@@ -1,10 +1,12 @@
+@@ -1,10 +1,14 @@
  import 'package:dpad/dpad.dart';
 -import 'package:flutter/rendering.dart' show RenderProxyBox;
 +import 'package:flutter/rendering.dart' show RenderProxyBox, ScrollDirection;
@@ -113,10 +113,12 @@ index bd683dd..a7d8fdd 100644
  import '../build_flags.dart';
 +// 【Halcyon 底栏】毛玻璃容器（自包含组件，仅本文件钩子引用）
 +import '../../widgets/halcyon_glass.dart';
++// 【Halcyon 底栏 v2】液态玻璃 dock（拖动滑切 + pill 指示器 + 速度形变）
++import '../../widgets/halcyon_dock_bar.dart';
  import 'bottom_chrome_dimens.dart';
  import 'bottom_chrome_scope.dart';
  import 'bottom_chrome_sink.dart';
-@@ -41,7 +43,16 @@ bool usesTwoPane(double width) => width >= twoPaneBreakpoint;
+@@ -41,7 +45,16 @@ bool usesTwoPane(double width) => width >= twoPaneBreakpoint;
  /// 横屏 NavigationRail 槽位宽的默认档（首次实测回填前的占位，与
  /// `_ResponsiveScaffoldState._railWidth` 的初值同源；rail 实际宽随文字档位由
  /// [_MeasureWidth] 实测，见 [navigationRailReservedWidth]）。
@@ -134,7 +136,7 @@ index bd683dd..a7d8fdd 100644
  
  /// 横屏 rail 与内容区之间的分隔线占位宽（`VerticalDivider(thickness: 1,
  /// width: 1)`，见 `_buildRailLayout`）。
-@@ -492,6 +503,61 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
+@@ -492,6 +505,61 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
    /// 门控仅为两条路径行为一致。
    bool _tvNavAutofocusDone = false;
  
@@ -196,7 +198,7 @@ index bd683dd..a7d8fdd 100644
    @override
    void initState() {
      super.initState();
-@@ -547,13 +613,10 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
+@@ -547,13 +615,10 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
        _selectedBounceKeys = _initBounceKeys(count);
      }
      if (widget.hideNavigation != oldWidget.hideNavigation) {
@@ -214,7 +216,7 @@ index bd683dd..a7d8fdd 100644
      }
      // 横屏侧栏滑出：跟 rail 自己的显隐目标（可能与底栏分叉，见 initState 注释）。
      final bool hideRail = widget.hideRailNavigation ?? widget.hideNavigation;
-@@ -685,11 +748,29 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
+@@ -685,11 +750,29 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
          return LayoutBuilder(
            builder: (BuildContext context, BoxConstraints constraints) {
              final bool rail = usesNavigationRail(constraints.maxWidth);
@@ -244,7 +246,7 @@ index bd683dd..a7d8fdd 100644
                // 逐帧进度源：同一份收起动画本体，供消费方**订阅**（而不是对本
                // InheritedWidget 建立依赖）—— 后者会让整棵消费子树逐帧重建。
                collapseProgress: _chromeHideCurve,
-@@ -716,26 +797,53 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
+@@ -716,26 +799,53 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
              NavigationDestinationLabelBehavior.alwaysHide
          ? BottomChromeDimens.navBarIconOnlyHeight
          : BottomChromeDimens.navBarWithLabelHeight;
@@ -305,7 +307,7 @@ index bd683dd..a7d8fdd 100644
        ),
        floatingActionButton: widget.floatingActionButton,
        bottomNavigationBar: chromeHidden
-@@ -751,11 +859,25 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
+@@ -751,30 +861,51 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
                  // tv: 主导航分区（memoryKey 'tv/main-nav'，边缘 leave）。正常构建
                  // 原样返回 NavigationBar。
                  child: _tvWrapNavRegion(
@@ -314,38 +316,72 @@ index bd683dd..a7d8fdd 100644
 -                    // 显示文字（始终显示/仅当前页）时用 64 紧凑高度，
 -                    // 比默认 80 更矮但仍能容纳 icon + label。
 -                    height: barHeight,
-+                  // 【Halcyon 底栏】悬浮毛玻璃胶囊 dock：底栏从"贴底通栏"
-+                  // 变为"左右 12dp / 下 10dp 悬浮 + 全圆角胶囊 + 高斯模糊 +
-+                  // 半透明底 + 内缘高光"。图标/胶囊回弹/文字三档行为全部
-+                  // 原样保留（_CapsuleBounce / theme labelBehavior 未动）。
-+                  // backgroundColor/shadowColor/surfaceTintColor 三连透明：
-+                  // NavigationBar 自带的 M3 surfaceContainer 底色与 tint 会
-+                  // 盖住毛玻璃，必须关掉让玻璃层当底。
+-                    selectedIndex: widget.selectedIndex,
+-                    onDestinationSelected: _handleDestinationSelected,
+-                    // 每个 tab 的图标外包自定义胶囊（选中时显示，点击/切换后
+-                    // 胶囊水平超出回弹，图标不动）
+-                    destinations: [
+-                      for (int i = 0; i < widget.destinations.length; i++)
+-                        _tvWrapNavItem(
+-                          index: i,
+-                          child: NavigationDestination(
+-                            // 正常构建原样返回 _CapsuleBounce。
+-                            icon: _CapsuleBounce(
+-                              key: _bounceKeys[i],
+-                              selected: widget.selectedIndex == i,
+-                              child: widget.destinations[i].icon,
+-                            ),
+-                            label: widget.destinations[i].label,
++                  // 【Halcyon 底栏 v2】自写液态玻璃 dock（halcyon_dock_bar.dart，
++                  // 蓝本 FloatingBottomBar.kt）：拖动滑切 tab + pill 指示器 +
++                  // 按压面板膨胀 + pill 速度拉伸 + 橡皮筋 + BackdropFilter 玻璃。
++                  // 原 NavigationBar 的 M3 语义全部保留：选中震动（
++                  // _handleDestinationSelected）、_CapsuleBounce 图标回弹、
++                  // TV 焦点包装（_tvWrapNavItem）、labelBehavior 三档文字显隐。
 +                  Padding(
 +                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-+                    child: HalcyonGlassContainer(
-+                      borderRadius: BorderRadius.circular(barHeight / 2),
-+                      child: NavigationBar(
-+                        backgroundColor: Colors.transparent,
-+                        shadowColor: Colors.transparent,
-+                        surfaceTintColor: Colors.transparent,
-+                        // 仅图标（alwaysHide）时高度减半紧凑显示（44）；
-+                        // 显示文字（始终显示/仅当前页）时用 64 紧凑高度，
-+                        // 比默认 80 更矮但仍能容纳 icon + label。
-+                        height: barHeight,
-                     selectedIndex: widget.selectedIndex,
-                     onDestinationSelected: _handleDestinationSelected,
-                     // 每个 tab 的图标外包自定义胶囊（选中时显示，点击/切换后
-@@ -776,6 +898,8 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
++                    child: HalcyonDockBar(
++                      selectedIndex: widget.selectedIndex,
++                      tabCount: widget.destinations.length,
++                      // 仅图标（alwaysHide）时 44 紧凑；带文字时 64。
++                      height: barHeight,
++                      labelMode: switch (labelBehavior) {
++                        NavigationDestinationLabelBehavior.alwaysHide =>
++                          HalcyonDockLabelMode.none,
++                        NavigationDestinationLabelBehavior.alwaysShow =>
++                          HalcyonDockLabelMode.always,
++                        _ => HalcyonDockLabelMode.activeOnly,
++                      },
++                      onItemTap: _handleDestinationSelected,
++                      itemBuilder: (context, i, selected) => _tvWrapNavItem(
++                        index: i,
++                        child: HalcyonDockTabContent(
++                          icon: _CapsuleBounce(
++                            key: _bounceKeys[i],
++                            selected: selected,
++                            child: widget.destinations[i].icon,
+                           ),
++                          label: switch (labelBehavior) {
++                            NavigationDestinationLabelBehavior.alwaysHide =>
++                              null,
++                            NavigationDestinationLabelBehavior.alwaysShow =>
++                              widget.destinations[i].label,
++                            _ => selected
++                                ? widget.destinations[i].label
++                                : null,
++                          },
++                          selected: selected,
++                          contentColor:
++                              Theme.of(context).colorScheme.onSurface,
++                          activeColor: Theme.of(context).colorScheme.primary,
                          ),
-                     ],
-                   ),
+-                    ],
 +                      ),
 +                    ),
+                   ),
                  ),
                ),
-             ),
-@@ -895,7 +1019,15 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
+@@ -895,7 +1026,15 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
                              // NavigationBar 同一条路径共用；二者按宽度互斥，不会
                              // 同屏双 Region）。正常构建原样返回 NavigationRail。
                              child: _tvWrapNavRegion(
@@ -362,7 +398,7 @@ index bd683dd..a7d8fdd 100644
                                  selectedIndex: widget.selectedIndex,
                                  onDestinationSelected: _handleDestinationSelected,
                                  // 每个 tab 的图标外包自定义胶囊（icon 与 selectedIcon
-@@ -936,6 +1068,8 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
+@@ -936,6 +1075,8 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
                                  // tab 过多时 NavigationRail 内部自动滚动。宽度/间距均为
                                  // 原生固定规格。
                                  groupAlignment: 0.0,
@@ -371,7 +407,7 @@ index bd683dd..a7d8fdd 100644
                                ),
                              ),
                            ),
-@@ -943,36 +1077,6 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
+@@ -943,36 +1084,6 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
                        ),
                      ),
                    ),
@@ -408,6 +444,11 @@ index bd683dd..a7d8fdd 100644
                    ),
                  );
                },
+@@ -1177,4 +1288,3 @@ class _CapsuleBounceState extends State<_CapsuleBounce>
+     );
+   }
+ }
+-
 diff --git a/lib/modules/player/mini_player.dart b/lib/modules/player/mini_player.dart
 index ea75e95..131dd24 100644
 --- a/lib/modules/player/mini_player.dart
@@ -597,6 +638,99 @@ index ea75e95..131dd24 100644
                  ),
                );
              },
+diff --git a/lib/modules/player/secondary_mini_player.dart b/lib/modules/player/secondary_mini_player.dart
+index c52a20c..c9bc1ed 100644
+--- a/lib/modules/player/secondary_mini_player.dart
++++ b/lib/modules/player/secondary_mini_player.dart
+@@ -1,6 +1,6 @@
+ import 'dart:async';
+ import 'dart:math' as math;
+-import 'dart:ui' show PathMetric;
++import 'dart:ui' show ImageFilter, PathMetric;
+ 
+ import 'package:material_ui/material_ui.dart';
+ import 'package:flutter/gestures.dart';
+@@ -1387,10 +1387,15 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+       expansion,
+       layerWillDraw: PlayerCoverMorphBus.instance.coverLayerWillDraw,
+     );
+-    final background = resolveMiniPlayerBackground(
+-      cs,
+-      useBackgroundImage: useBackgroundImage,
+-    );
++    // 【Halcyon 二级胶囊玻璃】壁纸档：底色改用 Halcyon 玻璃 tint
++    // （亮 White@0.38 / 暗 #111114@0.42，与一级常驻条玻璃胶囊同档——
++    // 旧值 cs.surface@0.2 太薄，胶囊内文字直接叠在壁纸上，可读性差）。
++    // 非壁纸档保持实底（resolveMiniPlayerBackground 的 surface 实色）。
++    final background = useBackgroundImage
++        ? (Theme.of(context).brightness == Brightness.dark
++            ? const Color(0xFF111114).withValues(alpha: 0.42)
++            : Colors.white.withValues(alpha: 0.38))
++        : resolveMiniPlayerBackground(cs, useBackgroundImage: false);
+     // 底色随交接淡出：alpha 按 chrome 缩放（p=0 时 chrome=1 → 与原值逐位相等）。
+     final chromeBackground = chrome >= 1.0
+         ? background
+@@ -1486,12 +1491,19 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+               openFullPlayer(context, scene: _captureMorphScene());
+             }
+           },
+-          child: Material(
++          child: _secondaryGlassWrap(
++            // 【Halcyon 二级胶囊玻璃】壁纸档外包 BackdropFilter：模糊身后
++            // 列表内容（extendBody 下列表滚到胶囊后面）。sigma 随 chrome
++            // 交接淡出到 0（p=1 整条不可见时模糊同步消失，不残影）。
++            // 非壁纸档原样透传（实底 Material 不糊）。
++            useBackgroundImage: useBackgroundImage,
++            chrome: chrome,
++            radius: radius,
++            child: Material(
+             key: _pillKey,
+             elevation: 0,
+-            // 底色与常驻条同源取色（复用 resolveMiniPlayerBackground），两形态切换零色差；
+-            // 壁纸档 0.2 是 2026-10-10 确认的决定，辨识度由胶囊既有投影（下方 shadow）承担。
+-            // 展开交接时 alpha 按 [chrome] 缩放（见上方 chromeBackground）。
++            // 底色与常驻条同源取色；壁纸档 tint 已在上方 background 处
++            // 升级为 Halcyon 玻璃档（0.38/0.42），alpha 仍按 [chrome] 缩放。
+             color: chromeBackground,
+             borderRadius: BorderRadius.circular(radius),
+             clipBehavior: Clip.antiAlias,
+@@ -1564,6 +1576,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+         ),
+         ),
+       ),
++      ),
+     );
+   }
+ 
+@@ -1586,6 +1599,28 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+     );
+   }
+ 
++  /// 【Halcyon 二级胶囊玻璃】壁纸档给胶囊外包 BackdropFilter 玻璃层。
++  ///
++  /// sigma 随 [chrome]（展开交接曲线）逐帧缩放：p=0 全量模糊（sigma 18），
++  /// p=1 整条不可见时模糊同步消失，不残留玻璃框。非壁纸档（useBackgroundImage
++  /// =false）原样透传 child——实底 Material 本就不需要模糊，避免无谓开销。
++  /// 模糊区域由 ClipRRect 按胶囊圆角裁剪，与 Material 的 antiAlias 裁剪同心。
++  Widget _secondaryGlassWrap({
++    required bool useBackgroundImage,
++    required double chrome,
++    required double radius,
++    required Widget child,
++  }) {
++    if (!useBackgroundImage) return child;
++    return ClipRRect(
++      borderRadius: BorderRadius.circular(radius),
++      child: BackdropFilter(
++        filter: ImageFilter.blur(sigmaX: 18 * chrome, sigmaY: 18 * chrome),
++        child: child,
++      ),
++    );
++  }
++
+   /// 展开态的文字信息 + 播放控制（封面已抽为贯穿两态的独立元素，故此处
+   /// 左侧留出封面空位）。点击整体进完整播放页（由外层 GestureDetector 处理）。
+   ///
 diff --git a/lib/modules/user/listen_stats_page.dart b/lib/modules/user/listen_stats_page.dart
 index b70edd2..03c9fb3 100644
 --- a/lib/modules/user/listen_stats_page.dart
@@ -648,6 +782,380 @@ index b70edd2..03c9fb3 100644
            ],
          ],
        ),
+diff --git a/lib/widgets/halcyon_dock_bar.dart b/lib/widgets/halcyon_dock_bar.dart
+new file mode 100644
+index 0000000..4e6c8b6
+--- /dev/null
++++ b/lib/widgets/halcyon_dock_bar.dart
+@@ -0,0 +1,368 @@
++// Halcyon 液态玻璃悬浮底栏（Flutter 移植版）。
++// 蓝本：Halcyon (Kotlin Compose) ui/components/FloatingBottomBar.kt +
++// ui/animation/DampedDragAnimation.kt 的可见行为子集（行号见注释）：
++//   - 玻璃面板：BackdropFilter 模糊 + 半透明底 + 内缘高光（Compose 端的
++//     lens 折射/陀螺仪光源 Flutter 无对应 shader 管线，用高光描边 + pill
++//     顶部光泽渐变近似；玻璃色参数照抄 GlassPill.kt:38-45 LiquidGlass 档）。
++//   - pill 指示器：primary 15% 实底（FloatingBottomBar.kt:569 accent 0.15），
++//     拖动跟手、松手 spring 回弹（同文件 328：dampingRatio 1 / stiffness 300）。
++//   - 拖动滑切：手指横向拖动连续扫过 tab（DampedDragAnimation 语义），
++//     位移超 touchSlop 且落点 tab 变化才提交切换（同文件 322）。
++//   - 橡皮筋：拖动面板整体位移 ≤4dp EaseOut（同文件 279-289、345）。
++//   - 按压形变：面板 scale 1→1+16dp/width（同文件 444）、pill 速度拉伸
++//     （同文件 537-539：横向 /(1-0.75v)、纵向 ×(1-0.25v)，clamp ±0.2）。
++// 与 MD3Music 的融合边界：导航提交/震动/TV 焦点包装/labelBehavior 三档
++// 由调用方（responsive_layout）注入，本组件只管视觉与手势。
++import 'dart:math' as math;
++import 'dart:ui' show ImageFilter;
++
++import 'package:flutter/material.dart';
++
++/// 底栏玻璃配色（GlassPill.kt:38-45 LiquidGlass 档：亮 white@0.34 / 暗 #111114@0.38）。
++const double kHalcyonDockLightAlpha = 0.34;
++const double kHalcyonDockDarkAlpha = 0.38;
++const Color kHalcyonDockDarkTint = Color(0xFF111114);
++
++/// pill 指示器底色 alpha（FloatingBottomBar.kt:569 accent 0.15）。
++const double kHalcyonDockPillAlpha = 0.15;
++
++/// 橡皮筋最大位移（同上 279 rubberBandPx = 4.dp）。
++const double kHalcyonDockRubberBandDp = 4.0;
++
++/// 按压时面板膨胀的等效值（同上 444：1 + 16.dp/width）。
++const double kHalcyonDockPressBulgeDp = 16.0;
++
++/// pill/面板回弹弹簧（同上 328 spring(1f, 300f, 0.5f)）。
++const double kHalcyonDockSpringDampingRatio = 1.0;
++const double kHalcyonDockSpringStiffness = 300.0;
++
++/// pill 高 56 = 面板 64 - 上下 4 padding（同上 465-466、502）。
++const double kHalcyonDockPanelHeightDp = 64.0;
++const double kHalcyonDockEdgeInsetDp = 4.0;
++
++double _easeOut(double t) {
++  final double c = t.clamp(0.0, 1.0);
++  return 1.0 - (1.0 - c) * (1.0 - c);
++}
++
++/// 标签显隐三档（对应 MD3 NavigationDestinationLabelBehavior）。
++enum HalcyonDockLabelMode { none, activeOnly, always }
++
++/// Halcyon 风格悬浮玻璃底栏：拖动滑切 + pill 指示器 + 按压/速度形变。
++///
++/// [itemBuilder] 返回每个 tab 的内容（图标/文字由调用方组装，便于挂
++/// TV 焦点包装与 _CapsuleBounce 回弹）；[onItemTap] 在点击/拖动提交时
++/// 回调目标 index。
++class HalcyonDockBar extends StatefulWidget {
++  const HalcyonDockBar({
++    super.key,
++    required this.selectedIndex,
++    required this.tabCount,
++    required this.itemBuilder,
++    required this.onItemTap,
++    this.height = kHalcyonDockPanelHeightDp,
++    this.labelMode = HalcyonDockLabelMode.none,
++  });
++
++  final int selectedIndex;
++  final int tabCount;
++  final double height;
++  final HalcyonDockLabelMode labelMode;
++
++  /// (context, index, selected) → tab 内容。
++  final Widget Function(BuildContext, int, bool) itemBuilder;
++
++  /// 点击/拖动提交切换（与当前 index 相同不回调，由本组件保证）。
++  final ValueChanged<int> onItemTap;
++
++  @override
++  State<HalcyonDockBar> createState() => HalcyonDockBarState();
++}
++
++class HalcyonDockBarState extends State<HalcyonDockBar>
++    with TickerProviderStateMixin {
++  /// pill 连续位置（0..tabCount-1 浮点）。
++  double _pillValue = 0;
++
++  /// 拖动速度 px/s（pill 速度形变用，FloatingBottomBar.kt:537）。
++  double _velocity = 0;
++
++  /// 橡皮筋积分位移 px（同上 345 snapTo(value + dx)）。
++  double _rubberOffset = 0;
++
++  /// 按压进度 0..1（拖动中 1，松手回落）。
++  double _press = 0;
++
++  bool _dragging = false;
++  double _dragTravel = 0;
++  Duration _lastMoveTime = Duration.zero;
++  double _lastMoveX = 0;
++
++  double _totalWidth = 0;
++  double _tabWidth = 1;
++
++  /// 松手/点击后 pill 的 spring 回弹。
++  late final AnimationController _pillSpring =
++      AnimationController(vsync: this, duration: const Duration(seconds: 1));
++
++  @override
++  void initState() {
++    super.initState();
++    _pillValue = widget.selectedIndex.toDouble();
++  }
++
++  @override
++  void didUpdateWidget(covariant HalcyonDockBar old) {
++    super.didUpdateWidget(old);
++    // 外部 route 变化（返回键/深链）时 pill spring 跟随。
++    if (old.selectedIndex != widget.selectedIndex && !_dragging) {
++      _springPillTo(widget.selectedIndex.toDouble());
++    }
++  }
++
++  @override
++  void dispose() {
++    _pillSpring.dispose();
++    super.dispose();
++  }
++
++  SpringDescription get _springDesc => SpringDescription(
++        mass: 1,
++        stiffness: kHalcyonDockSpringStiffness,
++        // damping = ratio × 2 × √(mass×stiffness)，ratio=1 无弹跳。
++        damping: kHalcyonDockSpringDampingRatio *
++            2 *
++            math.sqrt(kHalcyonDockSpringStiffness),
++      );
++
++  void _springPillTo(double target) {
++    _pillSpring.animateWith(
++      SpringSimulation(_springDesc, _pillValue, target, 0),
++    );
++  }
++
++  void _onDragStart(DragStartDetails d) {
++    _dragging = true;
++    _dragTravel = 0;
++    _lastMoveTime = d.sourceTimeStamp;
++    _lastMoveX = d.localPosition.dx;
++    _pillSpring.stop();
++    setState(() => _press = 1);
++  }
++
++  void _onDragUpdate(DragUpdateDetails d) {
++    if (!_dragging || _tabWidth <= 0) return;
++    final double x = d.localPosition.dx;
++    _dragTravel += d.delta.dx.abs();
++    // pill 连续跟手（同上 340：delta/tabWidth 按位置直读）。
++    _pillValue = ((x - kHalcyonDockEdgeInsetDp) / _tabWidth)
++        .clamp(0.0, (widget.tabCount - 1).toDouble());
++    // 速度估计 px/s（pill 速度形变，同上 537）。
++    final double dtMs =
++        (d.sourceTimeStamp - _lastMoveTime).inMilliseconds.toDouble();
++    if (dtMs > 1) {
++      _velocity = ((x - _lastMoveX) / dtMs * 1000).clamp(-4000.0, 4000.0);
++      _lastMoveTime = d.sourceTimeStamp;
++      _lastMoveX = x;
++    }
++    // 橡皮筋积分（同上 345）。
++    _rubberOffset += d.delta.dx;
++    setState(() {});
++  }
++
++  void _onDragEnd(DragEndDetails d) {
++    if (!_dragging) return;
++    _dragging = false;
++    _velocity = d.velocity.pixelsPerSecond.dx.clamp(-4000.0, 4000.0);
++    // 提交判定（同上 322）：位移超 touchSlop 且 round 后变 tab 才切。
++    final double slop =
++        MediaQuery.gestureSettingsOf(context).touchSlop ?? kTouchSlop.toDouble();
++    final int target = _pillValue.round().clamp(0, widget.tabCount - 1);
++    if (_dragTravel.abs() >= slop && target != widget.selectedIndex) {
++      widget.onItemTap(target);
++    }
++    _springPillTo(widget.selectedIndex.toDouble());
++    setState(() => _press = 0);
++    // 速度形变随后续 spring 帧自然衰减（见 build 中每帧 ×0.86）。
++  }
++
++  void _onDragCancel() {
++    if (!_dragging) return;
++    _dragging = false;
++    _springPillTo(widget.selectedIndex.toDouble());
++    setState(() => _press = 0);
++  }
++
++  void _tapItem(int index) {
++    if (index == widget.selectedIndex) return;
++    _velocity = 0;
++    widget.onItemTap(index);
++    _springPillTo(index.toDouble());
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    final ColorScheme cs = Theme.of(context).colorScheme;
++    final bool isDark = Theme.of(context).brightness == Brightness.dark;
++    final Color panelColor = (isDark ? kHalcyonDockDarkTint : Colors.white)
++        .withValues(
++            alpha: isDark ? kHalcyonDockDarkAlpha : kHalcyonDockLightAlpha);
++    final Color contentColor = cs.onSurface;
++    final Color activeColor = cs.primary;
++
++    return LayoutBuilder(builder: (BuildContext context, BoxConstraints c) {
++      _totalWidth = c.maxWidth;
++      _tabWidth = ((_totalWidth - kHalcyonDockEdgeInsetDp * 2) / widget.tabCount)
++          .clamp(1.0, double.infinity);
++      final double radius = widget.height / 2;
++      final double press = _press;
++      final double pillLeft =
++          kHalcyonDockEdgeInsetDp + _pillValue * _tabWidth;
++      // 速度形变（同上 537-539）：v = velocity/10，clamp ±0.2（归一化口径
++      // 与 Compose 的 px 值不同：这里 /1000 折算 dp 量级，实测再调）。
++      final double v = (_velocity / 10 / 1000).clamp(-0.2, 0.2);
++      final double pillScaleX = 1.0 / (1.0 - (v * 0.75));
++      final double pillScaleY = 1.0 - (v * 0.25);
++      // 橡皮筋（同上 285-287）：fraction×4dp×EaseOut(|fraction|)。
++      final double f =
++          (_rubberOffset / math.max(_totalWidth, 1)).clamp(-1.0, 1.0);
++      final double panelShift =
++          kHalcyonDockRubberBandDp * f.sign * _easeOut(f.abs());
++      // 面板按压膨胀（同上 444：lerp(1, 1+16dp/width, press)）。
++      final double bulge =
++          1.0 + kHalcyonDockPressBulgeDp / math.max(_totalWidth, 1) * press;
++
++      return GestureDetector(
++        behavior: HitTestBehavior.deferToChild,
++        onHorizontalDragStart: _onDragStart,
++        onHorizontalDragUpdate: _onDragUpdate,
++        onHorizontalDragEnd: _onDragEnd,
++        onHorizontalDragCancel: _onDragCancel,
++        child: Transform.translate(
++          offset: Offset(panelShift, 0),
++          child: Transform.scale(
++            scale: bulge,
++            child: ClipRRect(
++              borderRadius: BorderRadius.circular(radius),
++              child: BackdropFilter(
++                // LiquidGlass 档 blur 6dp（BottomBarLiquidGlassConfig 默认），
++                // Flutter sigma 口径 ×2 ≈ 12；壁纸预模糊基建下开销可接受。
++                filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
++                child: Container(
++                  height: widget.height,
++                  decoration: BoxDecoration(
++                    color: panelColor,
++                    borderRadius: BorderRadius.circular(radius),
++                    // 内缘高光近似 BloomStroke（同上 161-179 白 0.12）。
++                    border: Border.all(
++                      color: Colors.white
++                          .withValues(alpha: isDark ? 0.10 : 0.18),
++                      width: 1,
++                    ),
++                  ),
++                  child: Stack(
++                    children: <Widget>[
++                      Positioned(
++                        left: pillLeft,
++                        top: 4,
++                        bottom: 4,
++                        width: _tabWidth,
++                        child: Transform.scale(
++                          scaleX: pillScaleX,
++                          scaleY: pillScaleY,
++                          alignment: Alignment.center,
++                          child: Container(
++                            decoration: BoxDecoration(
++                              color: activeColor
++                                  .withValues(alpha: kHalcyonDockPillAlpha),
++                              borderRadius:
++                                  BorderRadius.circular(radius - 4),
++                              // pill 顶部光泽渐变（近似 lens 高光带）。
++                              gradient: LinearGradient(
++                                begin: Alignment.topCenter,
++                                end: Alignment.center,
++                                colors: <Color>[
++                                  Colors.white
++                                      .withValues(alpha: isDark ? 0.08 : 0.14),
++                                  Colors.transparent,
++                                ],
++                              ),
++                            ),
++                          ),
++                        ),
++                      ),
++                      Row(
++                        children: <Widget>[
++                          for (int i = 0; i < widget.tabCount; i++)
++                            Expanded(
++                              child: GestureDetector(
++                                behavior: HitTestBehavior.opaque,
++                                onTap: () => _tapItem(i),
++                                child: Center(
++                                  child: widget.itemBuilder(
++                                    context,
++                                    i,
++                                    i == widget.selectedIndex,
++                                  ),
++                                ),
++                              ),
++                            ),
++                        ],
++                      ),
++                    ],
++                  ),
++                ),
++              ),
++            ),
++          ),
++        ),
++      );
++    });
++  }
++}
++
++/// 供 responsive_layout 组装 tab 内容的默认排版（FloatingBottomBarItem：
++/// Icon 26dp + label 11sp、垂直 1dp、选中 primary/未选中 onSurface）。
++class HalcyonDockTabContent extends StatelessWidget {
++  const HalcyonDockTabContent({
++    super.key,
++    required this.icon,
++    this.label,
++    required this.selected,
++    required this.contentColor,
++    required this.activeColor,
++  });
++
++  final Widget icon;
++  final String? label;
++  final bool selected;
++  final Color contentColor;
++  final Color activeColor;
++
++  @override
++  Widget build(BuildContext context) {
++    final Color color = selected ? activeColor : contentColor;
++    return IconTheme.merge(
++      data: IconThemeData(color: color, size: 26),
++      child: DefaultTextStyle.merge(
++        style: TextStyle(
++          fontSize: 11,
++          height: 1.0,
++          color: color,
++          fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
++        ),
++        child: Column(
++          mainAxisSize: MainAxisSize.min,
++          mainAxisAlignment: MainAxisAlignment.center,
++          children: <Widget>[
++            icon,
++            if (label != null && label!.isNotEmpty) ...<Widget>[
++              const SizedBox(height: 1),
++              Text(label!, maxLines: 1, overflow: TextOverflow.ellipsis),
++            ],
++          ],
++        ),
++      ),
++    );
++  }
++}
 diff --git a/lib/widgets/halcyon_glass.dart b/lib/widgets/halcyon_glass.dart
 new file mode 100644
 index 0000000..80a113e

@@ -1,10 +1,14 @@
 import 'package:dpad/dpad.dart';
-import 'package:flutter/rendering.dart' show RenderProxyBox;
+import 'package:flutter/rendering.dart' show RenderProxyBox, ScrollDirection;
 import 'package:material_ui/material_ui.dart';
 import 'package:m3e_core/m3e_core.dart';
 import 'package:provider/provider.dart';
 
 import '../build_flags.dart';
+// 【Halcyon 底栏】毛玻璃容器（自包含组件，仅本文件钩子引用）
+import '../../widgets/halcyon_glass.dart';
+// 【Halcyon 底栏 v2】液态玻璃 dock（拖动滑切 + pill 指示器 + 速度形变）
+import '../../widgets/halcyon_dock_bar.dart';
 import 'bottom_chrome_dimens.dart';
 import 'bottom_chrome_scope.dart';
 import 'bottom_chrome_sink.dart';
@@ -41,7 +45,16 @@ bool usesTwoPane(double width) => width >= twoPaneBreakpoint;
 /// 横屏 NavigationRail 槽位宽的默认档（首次实测回填前的占位，与
 /// `_ResponsiveScaffoldState._railWidth` 的初值同源；rail 实际宽随文字档位由
 /// [_MeasureWidth] 实测，见 [navigationRailReservedWidth]）。
-const double kNavigationRailDefaultWidth = 96.0;
+// 【Halcyon 玻璃 rail】需容纳玻璃胶囊左右边距 12+4 + rail 内容区 96
+// （M3 带文字档的 rail 宽）。OverflowBox 按本值恒定强制（_MeasureWidth
+// 回填同值，实为恒定档，非动态测量）。
+const double kNavigationRailDefaultWidth = 112.0;
+
+/// 【Halcyon 悬浮胶囊】底栏玻璃胶囊的下边距（dp）——底栏 Padding
+/// fromLTRB(12, 0, 12, 10) 的 bottom。槽位总高必须包含它（见
+/// _buildCompactLayout slotHeight 的勘误说明），否则 Slot 的 Clip.hardEdge
+/// 会把悬浮边距整段裁掉；mini_player 的 kMiniPlayerDockLift 口径也依赖它。
+const double kBottomBarDockBottomInset = 10.0;
 
 /// 横屏 rail 与内容区之间的分隔线占位宽（`VerticalDivider(thickness: 1,
 /// width: 1)`，见 `_buildRailLayout`）。
@@ -492,6 +505,61 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
   /// 门控仅为两条路径行为一致。
   bool _tvNavAutofocusDone = false;
 
+  /// 【Halcyon 滚动隐藏】主页面列表滚动期望的底栏收起态：向下浏览（手指
+  /// 上滑）为 true，向上回看为 false。与 route 驱动的 [hideNavigation]
+  /// 取或作为底栏最终目标（见 [_applyChromeTarget] 的全部调用点）。
+  /// 只作用于竖屏底栏（横屏 rail 维持 route 驱动，滚动不收侧栏）。
+  bool _scrollHidden = false;
+
+  /// 底栏收起目标的唯一写入口：route prop（didUpdateWidget）与滚动期望
+  /// （_onUserScroll）都收敛到这里，避免两处直呼 forward/reverse 出现
+  /// 目标打架。reduceMotion 时跳过动画直落端点（与上游口径一致）。
+  void _applyChromeTarget(bool hide) {
+    if (_reduceMotion) {
+      _chromeHide.value = hide ? 1.0 : 0.0;
+    } else if (hide) {
+      _chromeHide.forward();
+    } else {
+      _chromeHide.reverse();
+    }
+  }
+
+  /// 【Halcyon 滚动隐藏】监听主布局滚动方向驱动底栏收起/展开。
+  ///
+  /// 过滤条件（全部命中才生效）：
+  /// - 总开关 [kHalcyonScrollHideChrome]；
+  /// - 竖向滚动（PageView/TabBarView 横向翻页的 UserScrollNotification
+  ///   axis 是 horizontal，排除——翻页不是浏览列表，收起底栏会打断交互）；
+  /// - 非 route 收起态（二级页面由 [hideNavigation] 驱动，滚动语义不掺和）；
+  /// - 非 TV（dpad 滚动是逐项聚焦伴随的连续滚动，收起底栏会让导航栏焦点
+  ///   系统和可视状态错位）。
+  ///
+  /// UserScrollNotification.direction 已是滚动引擎的手势方向判定（reverse
+  /// = 内容向上 = 向下浏览），自带滞回，无需额外阈值。返回 false 不拦截
+  /// 冒泡，既有 NotificationListener 链路（迷你条等）不受影响。
+  bool _onUserScroll(UserScrollNotification n) {
+    if (!kHalcyonScrollHideChrome) return false;
+    if (n.metrics.axis != Axis.vertical) return false;
+    if (widget.hideNavigation || kTvBuild) return false;
+    switch (n.direction) {
+      case ScrollDirection.reverse:
+        if (!_scrollHidden) {
+          // setState：主 build 的 chromeHidden 判定（槽位移除）读本字段，
+          // 需与动画并行请求一次重建；方向切换只发生一次，非逐帧。
+          setState(() => _scrollHidden = true);
+          _applyChromeTarget(true);
+        }
+      case ScrollDirection.forward:
+        if (_scrollHidden) {
+          setState(() => _scrollHidden = false);
+          _applyChromeTarget(false);
+        }
+      case ScrollDirection.idle:
+        break;
+    }
+    return false;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -547,13 +615,10 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
       _selectedBounceKeys = _initBounceKeys(count);
     }
     if (widget.hideNavigation != oldWidget.hideNavigation) {
-      if (_reduceMotion) {
-        _chromeHide.value = widget.hideNavigation ? 1.0 : 0.0;
-      } else if (widget.hideNavigation) {
-        _chromeHide.forward();
-      } else {
-        _chromeHide.reverse();
-      }
+      // route 驱动接管时滚动期望作废（从二级页面回来底栏必须是展开态；
+      // 不复位的话 _scrollHidden 残留会让 effectiveHide 与 prop 口径分叉）
+      _scrollHidden = false;
+      _applyChromeTarget(widget.hideNavigation);
     }
     // 横屏侧栏滑出：跟 rail 自己的显隐目标（可能与底栏分叉，见 initState 注释）。
     final bool hideRail = widget.hideRailNavigation ?? widget.hideNavigation;
@@ -685,11 +750,29 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
         return LayoutBuilder(
           builder: (BuildContext context, BoxConstraints constraints) {
             final bool rail = usesNavigationRail(constraints.maxWidth);
+            // 【Halcyon 底栏】槽位总高与 _buildCompactLayout 内的 slotHeight
+            // **同式**（同源两处算：改一处必须同步另一处）。经 scope 下发给
+            // 底部常驻迷你条做坞位净空抬升——extendBody 后 body 延伸到槽位
+            // 后面，迷你条不自行抬升就会被后画的玻璃底栏盖住（见
+            // BottomChromeScope.slotHeight 的说明）。横屏侧栏没有底栏槽位，
+            // 传 0（坞位存在性同为 false，消费方不会读它）。
+            // 【勘误 2026-10-31】+ kBottomBarDockBottomInset：槽位总高 =
+            // 底栏本体真实总高（含胶囊下边距），与 _buildCompactLayout 的
+            // slotHeight 同式双写（改一处必须同步另一处）。
+            final double scopeSlotHeight = rail
+                ? 0.0
+                : (Theme.of(context).navigationBarTheme.labelBehavior ==
+                          NavigationDestinationLabelBehavior.alwaysHide
+                      ? BottomChromeDimens.navBarIconOnlyHeight
+                      : BottomChromeDimens.navBarWithLabelHeight) +
+                    MediaQuery.paddingOf(context).bottom +
+                    kBottomBarDockBottomInset;
             return BottomChromeScope(
               // 坞位存在性：收起动画期间底栏仍在槽位里（collapse < 1），
               // 播放条据此把净空口径线性过渡（见 BottomChromeScope 的说明）。
               hasBottomChrome: !rail && collapse < 1.0,
               bottomChromeCollapse: collapse,
+              slotHeight: scopeSlotHeight,
               // 逐帧进度源：同一份收起动画本体，供消费方**订阅**（而不是对本
               // InheritedWidget 建立依赖）—— 后者会让整棵消费子树逐帧重建。
               collapseProgress: _chromeHideCurve,
@@ -716,26 +799,53 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
             NavigationDestinationLabelBehavior.alwaysHide
         ? BottomChromeDimens.navBarIconOnlyHeight
         : BottomChromeDimens.navBarWithLabelHeight;
-    final double slotHeight = barHeight + MediaQuery.paddingOf(context).bottom;
+    // 【勘误 2026-10-31】槽位总高 = 底栏本体真实总高：玻璃容器高（栏高 +
+    // NavigationBar 内部 SafeArea 补的手势条净空）+ 胶囊下边距。旧口径漏了
+    // 下边距——Slot 的 Clip.hardEdge 按 slotHeight 裁切，胶囊悬浮在屏底
+    // 上方的 10dp 边距被整段裁掉（悬浮失效）；收起滑动距离/面板下沉几何
+    // 同理差 10dp。与 LayoutBuilder 分支的 scopeSlotHeight 同式双写。
+    final double slotHeight =
+        barHeight +
+        MediaQuery.paddingOf(context).bottom +
+        kBottomBarDockBottomInset;
     final double collapse = _chromeHideCurve.value;
     // 隐藏判定不能只看进度：恢复方向（reverse）起步的那一帧进度仍是 1.0，
     // 只看进度会让底栏在"第一帧就该重新进树"时仍被判为已隐藏、退化成硬切。
-    // 目标态（widget.hideNavigation）与进度双条件：只有"收起方向 + 进度到 1"
+    // 目标态（route prop 或滚动期望）与进度双条件：只有"收起方向 + 进度到 1"
     // 才移除槽位，两端语义与原实现一致（见不变量：collapse>=1 传 null）。
-    final bool chromeHidden = collapse >= 1.0 && widget.hideNavigation;
+    final bool chromeHidden =
+        collapse >= 1.0 && (widget.hideNavigation || _scrollHidden);
     return Scaffold(
       key: _scaffoldKey,
       appBar: widget.appBar,
+      // 【Halcyon 底栏】毛玻璃透底的关键：body 延伸到 bottomNavigationBar
+      // 槽位后面，BackdropFilter 才能模糊到列表内容（否则槽位区域只有
+      // Scaffold 背景色，毛玻璃糊不出内容感）。
+      // body 底部避让的**真实口径**：extendBody 时 Scaffold 会给 body 注入
+      // padding.bottom=槽位高，但下方 _withAnimatedBottomInset 用
+      // `手势净空 × 收起进度` **覆盖**了它（静止时=0）——这是刻意为之：
+      // 页面列表保持上游口径（0），内容得以滚动到玻璃底栏后面被模糊；而被
+      // 盖住风险的底部常驻迷你条，改由 BottomChromeScope.slotHeight 下发
+      // 槽位高、在 mini_player 内自行抬升到玻璃胶囊上方（kMiniPlayerDockLift）。
+      // 页面口径与上游逐值一致，玻璃效果与迷你条可见性两头都成立。
+      extendBody: true,
       // body 底部安全区补偿：底栏还在槽位里时 Scaffold 会把 body 的底部 padding
       // **整段移除**（`removeBottomPadding: bottomNavigationBar != null`），于是
       // 底栏收起过程中 body 底部 inset 一直是 0，直到槽位被移除那一帧才突然补回
       // 真实值 —— 那又是一处滞后跳变。这里按收起进度把该 inset 线性补回去；
       // 两端同样保持包装（见 _withAnimatedBottomInset：换 body 槽位的类型会重建
       // 整棵 body，常驻播放条的封面就会闪）。
-      body: _withAnimatedBottomInset(
-        context,
-        widget.compactBody ?? widget.body,
-        collapse,
+      // 【Halcyon 滚动隐藏】滚动方向驱动底栏收起/展开：NotificationListener
+      // 挂在 body 上，页面列表的 UserScrollNotification 冒泡到此处。返回
+      // false 不拦截，下游既有通知链路原样。包在 _withAnimatedBottomInset
+      // 外层——它只是透传 child 的 wrapper，包内外等价，选外层少一层缩进。
+      body: NotificationListener<UserScrollNotification>(
+        onNotification: _onUserScroll,
+        child: _withAnimatedBottomInset(
+          context,
+          widget.compactBody ?? widget.body,
+          collapse,
+        ),
       ),
       floatingActionButton: widget.floatingActionButton,
       bottomNavigationBar: chromeHidden
@@ -751,30 +861,51 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
                 // tv: 主导航分区（memoryKey 'tv/main-nav'，边缘 leave）。正常构建
                 // 原样返回 NavigationBar。
                 child: _tvWrapNavRegion(
-                  NavigationBar(
-                    // 仅图标（alwaysHide）时高度减半紧凑显示（44）；
-                    // 显示文字（始终显示/仅当前页）时用 64 紧凑高度，
-                    // 比默认 80 更矮但仍能容纳 icon + label。
-                    height: barHeight,
-                    selectedIndex: widget.selectedIndex,
-                    onDestinationSelected: _handleDestinationSelected,
-                    // 每个 tab 的图标外包自定义胶囊（选中时显示，点击/切换后
-                    // 胶囊水平超出回弹，图标不动）
-                    destinations: [
-                      for (int i = 0; i < widget.destinations.length; i++)
-                        _tvWrapNavItem(
-                          index: i,
-                          child: NavigationDestination(
-                            // 正常构建原样返回 _CapsuleBounce。
-                            icon: _CapsuleBounce(
-                              key: _bounceKeys[i],
-                              selected: widget.selectedIndex == i,
-                              child: widget.destinations[i].icon,
-                            ),
-                            label: widget.destinations[i].label,
+                  // 【Halcyon 底栏 v2】自写液态玻璃 dock（halcyon_dock_bar.dart，
+                  // 蓝本 FloatingBottomBar.kt）：拖动滑切 tab + pill 指示器 +
+                  // 按压面板膨胀 + pill 速度拉伸 + 橡皮筋 + BackdropFilter 玻璃。
+                  // 原 NavigationBar 的 M3 语义全部保留：选中震动（
+                  // _handleDestinationSelected）、_CapsuleBounce 图标回弹、
+                  // TV 焦点包装（_tvWrapNavItem）、labelBehavior 三档文字显隐。
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+                    child: HalcyonDockBar(
+                      selectedIndex: widget.selectedIndex,
+                      tabCount: widget.destinations.length,
+                      // 仅图标（alwaysHide）时 44 紧凑；带文字时 64。
+                      height: barHeight,
+                      labelMode: switch (labelBehavior) {
+                        NavigationDestinationLabelBehavior.alwaysHide =>
+                          HalcyonDockLabelMode.none,
+                        NavigationDestinationLabelBehavior.alwaysShow =>
+                          HalcyonDockLabelMode.always,
+                        _ => HalcyonDockLabelMode.activeOnly,
+                      },
+                      onItemTap: _handleDestinationSelected,
+                      itemBuilder: (context, i, selected) => _tvWrapNavItem(
+                        index: i,
+                        child: HalcyonDockTabContent(
+                          icon: _CapsuleBounce(
+                            key: _bounceKeys[i],
+                            selected: selected,
+                            child: widget.destinations[i].icon,
                           ),
+                          label: switch (labelBehavior) {
+                            NavigationDestinationLabelBehavior.alwaysHide =>
+                              null,
+                            NavigationDestinationLabelBehavior.alwaysShow =>
+                              widget.destinations[i].label,
+                            _ => selected
+                                ? widget.destinations[i].label
+                                : null,
+                          },
+                          selected: selected,
+                          contentColor:
+                              Theme.of(context).colorScheme.onSurface,
+                          activeColor: Theme.of(context).colorScheme.primary,
                         ),
-                    ],
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -895,7 +1026,15 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
                             // NavigationBar 同一条路径共用；二者按宽度互斥，不会
                             // 同屏双 Region）。正常构建原样返回 NavigationRail。
                             child: _tvWrapNavRegion(
-                              NavigationRail(
+                              // 【Halcyon 玻璃 rail】横屏侧栏玻璃化：悬浮玻璃
+                              // 胶囊（左右 12 / 上下 12 / 右留 4 呼吸），全圆角
+                              // 28，rail 自身底色透明让玻璃当底（与竖屏底栏
+                              // 同一 HalcyonGlassContainer 材质，无条件渲染）。
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(12, 12, 4, 12),
+                                child: HalcyonGlassContainer(
+                                  borderRadius: BorderRadius.circular(28),
+                                  child: NavigationRail(
                                 selectedIndex: widget.selectedIndex,
                                 onDestinationSelected: _handleDestinationSelected,
                                 // 每个 tab 的图标外包自定义胶囊（icon 与 selectedIcon
@@ -936,6 +1075,8 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
                                 // tab 过多时 NavigationRail 内部自动滚动。宽度/间距均为
                                 // 原生固定规格。
                                 groupAlignment: 0.0,
+                                backgroundColor: Colors.transparent,
+                              ),
                               ),
                             ),
                           ),
@@ -943,36 +1084,6 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
                       ),
                     ),
                   ),
-                );
-              },
-            ),
-            // 分隔线与侧栏同节奏：槽位宽度随收起进度归零 + 淡出（1px 线滑出无意义）。
-            AnimatedBuilder(
-              animation: _railHideCurve,
-              builder: (context, _) {
-                final hideRail =
-                    widget.hideRailNavigation ?? widget.hideNavigation;
-                final double c = kTvBuild
-                    ? (hideRail ? 1.0 : 0.0)
-                    : _railHideCurve.value.clamp(0.0, 1.0);
-                return Visibility(
-                  visible: !(hideRail && c >= 1.0),
-                  maintainState: true,
-                  child: ClipRect(
-                    child: SizedBox(
-                      width: (1 - c).clamp(0.0, 1.0),
-                      child: Align(
-                        alignment: Alignment.centerRight,
-                        child: Opacity(
-                          opacity: 1 - c,
-                          child: VerticalDivider(
-                            thickness: 1,
-                            width: 1,
-                            color: Theme.of(context).colorScheme.outlineVariant,
-                          ),
-                        ),
-                      ),
-                    ),
                   ),
                 );
               },
@@ -1177,4 +1288,3 @@ class _CapsuleBounceState extends State<_CapsuleBounce>
     );
   }
 }
-
