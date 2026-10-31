@@ -784,10 +784,10 @@ index b70edd2..03c9fb3 100644
        ),
 diff --git a/lib/widgets/halcyon_dock_bar.dart b/lib/widgets/halcyon_dock_bar.dart
 new file mode 100644
-index 0000000..4e6c8b6
+index 0000000..e510d37
 --- /dev/null
 +++ b/lib/widgets/halcyon_dock_bar.dart
-@@ -0,0 +1,368 @@
+@@ -0,0 +1,370 @@
 +// Halcyon 液态玻璃悬浮底栏（Flutter 移植版）。
 +// 蓝本：Halcyon (Kotlin Compose) ui/components/FloatingBottomBar.kt +
 +// ui/animation/DampedDragAnimation.kt 的可见行为子集（行号见注释）：
@@ -807,6 +807,8 @@ index 0000000..4e6c8b6
 +import 'dart:ui' show ImageFilter;
 +
 +import 'package:flutter/material.dart';
++import 'package:flutter/physics.dart'
++    show SpringDescription, SpringSimulation;
 +
 +/// 底栏玻璃配色（GlassPill.kt:38-45 LiquidGlass 档：亮 white@0.34 / 暗 #111114@0.38）。
 +const double kHalcyonDockLightAlpha = 0.34;
@@ -934,7 +936,7 @@ index 0000000..4e6c8b6
 +  void _onDragStart(DragStartDetails d) {
 +    _dragging = true;
 +    _dragTravel = 0;
-+    _lastMoveTime = d.sourceTimeStamp;
++    _lastMoveTime = d.sourceTimeStamp ?? Duration.zero;
 +    _lastMoveX = d.localPosition.dx;
 +    _pillSpring.stop();
 +    setState(() => _press = 1);
@@ -949,10 +951,10 @@ index 0000000..4e6c8b6
 +        .clamp(0.0, (widget.tabCount - 1).toDouble());
 +    // 速度估计 px/s（pill 速度形变，同上 537）。
 +    final double dtMs =
-+        (d.sourceTimeStamp - _lastMoveTime).inMilliseconds.toDouble();
++        ((d.sourceTimeStamp ?? Duration.zero) - _lastMoveTime).inMilliseconds.toDouble();
 +    if (dtMs > 1) {
 +      _velocity = ((x - _lastMoveX) / dtMs * 1000).clamp(-4000.0, 4000.0);
-+      _lastMoveTime = d.sourceTimeStamp;
++      _lastMoveTime = d.sourceTimeStamp ?? Duration.zero;
 +      _lastMoveX = x;
 +    }
 +    // 橡皮筋积分（同上 345）。
@@ -966,7 +968,7 @@ index 0000000..4e6c8b6
 +    _velocity = d.velocity.pixelsPerSecond.dx.clamp(-4000.0, 4000.0);
 +    // 提交判定（同上 322）：位移超 touchSlop 且 round 后变 tab 才切。
 +    final double slop =
-+        MediaQuery.gestureSettingsOf(context).touchSlop ?? kTouchSlop.toDouble();
++        MediaQuery.gestureSettingsOf(context).touchSlop ?? 18.0;
 +    final int target = _pillValue.round().clamp(0, widget.tabCount - 1);
 +    if (_dragTravel.abs() >= slop && target != widget.selectedIndex) {
 +      widget.onItemTap(target);
