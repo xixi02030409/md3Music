@@ -44,10 +44,18 @@ index 14f9315..85ab6f2 100644
          backgroundColor: Colors.transparent,
          surfaceTintColor: Colors.transparent,
 diff --git a/lib/core/layout/bottom_chrome_scope.dart b/lib/core/layout/bottom_chrome_scope.dart
-index 74f3669..2d5073f 100644
+index 74f3669..88c007b 100644
 --- a/lib/core/layout/bottom_chrome_scope.dart
 +++ b/lib/core/layout/bottom_chrome_scope.dart
-@@ -40,6 +40,7 @@ class BottomChromeScope extends InheritedWidget {
+@@ -32,6 +32,7 @@ import 'package:flutter/widgets.dart';
+ typedef BottomChromeState = ({
+   Animation<double>? animation,
+   bool hasBottomChrome,
++  double slotHeight,
+ });
+ 
+ class BottomChromeScope extends InheritedWidget {
+@@ -40,6 +41,7 @@ class BottomChromeScope extends InheritedWidget {
      required this.hasBottomChrome,
      this.bottomChromeCollapse = 0.0,
      this.collapseProgress,
@@ -55,7 +63,7 @@ index 74f3669..2d5073f 100644
      required super.child,
    });
  
-@@ -61,6 +62,19 @@ class BottomChromeScope extends InheritedWidget {
+@@ -61,6 +63,19 @@ class BottomChromeScope extends InheritedWidget {
    /// 处理，与 [chromeCollapseOf] 的兜底口径一致。
    final Animation<double>? collapseProgress;
  
@@ -75,7 +83,14 @@ index 74f3669..2d5073f 100644
    /// 读取当前子树下方是否有底部 chrome；无 scope 祖先时返回 `false`。
    ///
    /// 在 build 内调用会建立依赖：竖屏↔横屏切换导致取值变化时子树自动重建。
-@@ -104,5 +118,6 @@ class BottomChromeScope extends InheritedWidget {
+@@ -98,11 +113,13 @@ class BottomChromeScope extends InheritedWidget {
+     return (
+       animation: scope?.collapseProgress,
+       hasBottomChrome: scope?.hasBottomChrome ?? false,
++      slotHeight: scope?.slotHeight ?? 0.0,
+     );
+   }
+ 
    @override
    bool updateShouldNotify(BottomChromeScope oldWidget) =>
        oldWidget.hasBottomChrome != hasBottomChrome ||
@@ -84,7 +99,7 @@ index 74f3669..2d5073f 100644
 +      oldWidget.slotHeight != slotHeight;
  }
 diff --git a/lib/core/layout/responsive_layout.dart b/lib/core/layout/responsive_layout.dart
-index bd683dd..53ad6c1 100644
+index bd683dd..a7d8fdd 100644
 --- a/lib/core/layout/responsive_layout.dart
 +++ b/lib/core/layout/responsive_layout.dart
 @@ -1,10 +1,12 @@
@@ -356,10 +371,13 @@ index bd683dd..53ad6c1 100644
                                ),
                              ),
                            ),
-@@ -946,37 +1080,6 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
-                 );
-               },
-             ),
+@@ -943,36 +1077,6 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
+                       ),
+                     ),
+                   ),
+-                );
+-              },
+-            ),
 -            // 分隔线与侧栏同节奏：槽位宽度随收起进度归零 + 淡出（1px 线滑出无意义）。
 -            AnimatedBuilder(
 -              animation: _railHideCurve,
@@ -387,13 +405,9 @@ index bd683dd..53ad6c1 100644
 -                        ),
 -                      ),
 -                    ),
--                  ),
--                );
--              },
--            ),
-             Expanded(child: screenType == ScreenType.expanded
-                 ? widget.expandedBody ?? widget.mediumBody ?? widget.body
-                 : widget.mediumBody ?? widget.body),
+                   ),
+                 );
+               },
 diff --git a/lib/modules/player/mini_player.dart b/lib/modules/player/mini_player.dart
 index ea75e95..131dd24 100644
 --- a/lib/modules/player/mini_player.dart
