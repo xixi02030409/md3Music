@@ -15,7 +15,12 @@ name: Halcyon UI (auto sync upstream + build)
 on:
   schedule:
     - cron: "23 */6 * * *" # 每 6 小时（分钟值错开整点高峰）
-  workflow_dispatch: # 手动触发入口
+  workflow_dispatch: # 手动触发入口（inputs.force=true 可越过 release 去重强制重建）
+    inputs:
+      force:
+        description: 'Force build even if release exists'
+        type: boolean
+        default: false
 
 permissions:
   contents: write # 创建 Release
@@ -58,7 +63,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "halcyon-ui-${{ steps.upstream.outputs.short }}" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          # 手动 dispatch 可带 force=true 强制重建（补丁更新后上游 sha 未变时用）
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "force=true，强制构建"
+          elif gh release view "halcyon-ui-${{ steps.upstream.outputs.short }}" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "build=false" >> "$GITHUB_OUTPUT"
             echo "已构建过该提交，跳过"
           else
