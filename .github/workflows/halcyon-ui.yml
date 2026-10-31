@@ -106,12 +106,28 @@ jobs:
       - name: Set up Android SDK
         if: steps.check.outputs.build == 'true'
         uses: android-actions/setup-android@v3
+        with:
+          # 与上游 main.yml 同口径：packages 参数必带（无参会走默认全量安装，
+          # 在新 runner 上触发 "Wrong version in preinstalled sdkmanager"
+          # + license 交互挂死——首跑已实证）；其余包显式安装。
+          packages: platform-tools
 
-      - name: Install Android platform 36
+      - name: Install Android SDK packages
         if: steps.check.outputs.build == 'true'
         run: |
-          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" >/dev/null 2>&1 || \
-            sdkmanager --install "platforms;android-36" || true
+          sdkmanager --install \
+            "cmdline-tools;latest" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" > /dev/null
+
+      - name: Cache Gradle
+        if: steps.check.outputs.build == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-halcyon-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
 
       - name: Set up Flutter
         if: steps.check.outputs.build == 'true'
