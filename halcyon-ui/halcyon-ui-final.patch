@@ -5002,6 +5002,407 @@ index b70edd2..03c9fb3 100644
            ],
          ],
        ),
+diff --git a/lib/widgets/halcyon/glass_effect.dart b/lib/widgets/halcyon/glass_effect.dart
+new file mode 100644
+index 0000000..e31b4a6
+--- /dev/null
++++ b/lib/widgets/halcyon/glass_effect.dart
+@@ -0,0 +1,68 @@
++// Halcyon GlassEffect.kt 的 Flutter 等价物 —— 参数与取色口径逐条搬。
++//
++// 源：ui-port/halcyon/.../ui/components/GlassEffect.kt
++//
++// 这个文件里没有任何"设计"，全是原版写死的数：谁在亮色用多少、暗色用多少、
++// 液态档和模糊档各是什么 alpha。搬过来才能保证两边观感是同一条曲线。
++import 'package:flutter/material.dart';
++
++/// BottomBarGlassEffect（原版枚举只有两档）。
++enum HalcyonGlassEffect {
++  /// 纯高斯模糊档。
++  blur,
++
++  /// 液态玻璃档：轻模糊 + 折射 + 色散。
++  liquidGlass,
++}
++
++/// BottomBarLiquidGlassConfig（原版默认值，见 GlassEffect.kt:17-22）。
++@immutable
++class HalcyonLiquidGlassConfig {
++  const HalcyonLiquidGlassConfig({
++    this.blurRadiusDp = 6.0,
++    this.refractionHeightDp = 24.0,
++    this.refractionAmountDp = 24.0,
++    this.chromaticAberration = 0.0,
++  });
++
++  final double blurRadiusDp;
++  final double refractionHeightDp;
++  final double refractionAmountDp;
++  final double chromaticAberration;
++}
++
++/// bottomBarGlassContainerColor（GlassEffect.kt:59-76）。
++///
++/// 注意参数默认值：亮/暗实底 0.56/0.58，液态档 0.38/0.42 —— GlassPill 调用时
++/// 会把液态档覆盖成 0.34/0.38（GlassPill.kt:38-45），两处默认不同是原版的样子。
++Color halcyonGlassContainerColor({
++  required bool isLight,
++  required HalcyonGlassEffect glassEffect,
++  double lightAlpha = 0.56,
++  double darkAlpha = 0.58,
++  double lightLiquidAlpha = 0.38,
++  double darkLiquidAlpha = 0.42,
++}) {
++  final double alpha = switch (glassEffect) {
++    HalcyonGlassEffect.blur => isLight ? lightAlpha : darkAlpha,
++    HalcyonGlassEffect.liquidGlass =>
++      isLight ? lightLiquidAlpha : darkLiquidAlpha,
++  };
++  return isLight
++      ? Colors.white.withValues(alpha: alpha)
++      : const Color(0xFF111114).withValues(alpha: alpha);
++}
++
++/// bottomBarGlassHighlightAlpha（GlassEffect.kt:78-82）。
++double halcyonGlassHighlightAlpha({
++  required bool isLight,
++  required HalcyonGlassEffect glassEffect,
++}) => switch (glassEffect) {
++  HalcyonGlassEffect.blur => isLight ? 0.22 : 0.14,
++  HalcyonGlassEffect.liquidGlass => isLight ? 0.18 : 0.10,
++};
++
++/// Color.simpleLuminance()（GlassEffect.kt:84-86）——**未做 gamma 校正的**
++/// 线性加权，与 Color.computeLuminance() 不是一回事，别替换。
++double simpleLuminance(Color color) =>
++    0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
+diff --git a/lib/widgets/halcyon/glass_pill.dart b/lib/widgets/halcyon/glass_pill.dart
+new file mode 100644
+index 0000000..f8a0c46
+--- /dev/null
++++ b/lib/widgets/halcyon/glass_pill.dart
+@@ -0,0 +1,160 @@
++// Halcyon GlassPill.kt 的 Flutter 等价物 —— **一个组件承担全部玻璃层**。
++//
++// 源：ui-port/halcyon/.../ui/components/GlassPill.kt
++//
++// 原版结构（Box 的 modifier 链，顺序即绘制顺序）：
++//   .clip(resolvedShape)
++//   .dropShadow(shape, Shadow(radius = 10.dp, alpha = if (isInDark) 0.2f else 0.1f))
++//   .then(drawBackdrop(effects = { blur(6dp); lens(24dp, 24dp, chroma) },
++//                      highlight = Highlight.Default.copy(alpha = 0.18/0.10),
++//                      onDrawSurface = { drawRect(containerColor) }))
++//
++// 搬过来就是本文件：调用方只给形状半径 + 内容，玻璃的层叠顺序由这里保证。
++// 之前把 lens 当独立滤镜撒在底栏/播放条各自的 Stack 里，每处各拼一遍顺序 ——
++// 那不是搬，也必然各处不一致。
++import 'dart:ui' as ui;
++
++import 'package:flutter/material.dart';
++
++import 'glass_effect.dart';
++import 'lens.dart';
++
++class HalcyonGlassPill extends StatelessWidget {
++  const HalcyonGlassPill({
++    super.key,
++    required this.cornerRadius,
++    required this.isLight,
++    required this.child,
++    this.glassEffect = HalcyonGlassEffect.liquidGlass,
++    this.liquidConfig = const HalcyonLiquidGlassConfig(),
++    this.disableRefraction = false,
++    this.surfaceColor,
++    this.shadowAlphaOverride,
++  });
++
++  /// resolvedShape 的圆角（dp，原版 coerceIn(0f, 32f)）。
++  final double cornerRadius;
++
++  final bool isLight;
++  final Widget child;
++
++  final HalcyonGlassEffect glassEffect;
++  final HalcyonLiquidGlassConfig liquidConfig;
++  final bool disableRefraction;
++
++  /// onDrawSurface 画的底色；null → bottomBarGlassContainerColor（GlassPill 的
++  /// 0.34/0.38 液态档覆盖值，见 GlassPill.kt:38-45）。
++  final Color? surfaceColor;
++
++  /// 原版 dropShadow 的 alpha（暗 0.2 / 亮 0.1）；个别场景要更淡时覆盖。
++  final double? shadowAlphaOverride;
++
++  @override
++  Widget build(BuildContext context) {
++    final bool isDark = !isLight;
++    final double radius = cornerRadius.clamp(0.0, 32.0);
++    final Color surface =
++        surfaceColor ??
++        halcyonGlassContainerColor(
++          isLight: isLight,
++          glassEffect: glassEffect,
++          lightLiquidAlpha: 0.34, // GlassPill.kt:43
++          darkLiquidAlpha: 0.38, // GlassPill.kt:44
++        );
++    final double highlight = halcyonGlassHighlightAlpha(
++      isLight: isLight,
++      glassEffect: glassEffect,
++    );
++    final double shadowAlpha =
++        shadowAlphaOverride ?? (isDark ? 0.20 : 0.10); // GlassPill.kt:83
++
++    return DecoratedBox(
++      // dropShadow 必须画在裁剪层外面，否则会被圆角裁掉。
++      decoration: BoxDecoration(
++        borderRadius: BorderRadius.circular(radius),
++        boxShadow: <BoxShadow>[
++          BoxShadow(
++            color: Colors.black.withValues(alpha: shadowAlpha),
++            blurRadius: 10, // Shadow(radius = 10.dp)
++          ),
++        ],
++      ),
++      child: ClipRRect(
++        borderRadius: BorderRadius.circular(radius),
++        child: LayoutBuilder(
++          builder: (BuildContext context, BoxConstraints c) {
++            final double w = c.maxWidth;
++            final double h = c.maxHeight;
++            final bool liquid = glassEffect == HalcyonGlassEffect.liquidGlass;
++            final double pad = liquid ? liquidConfig.refractionAmountDp : 0;
++            return Stack(
++              // 镜片盒子要比形状大 2×padding（BackdropEffectScope.padding 的
++              // 几何含义），所以这里不能裁；形状仍由外层 ClipRRect 负责。
++              clipBehavior: Clip.none,
++              children: <Widget>[
++                // 1) effects：blur → lens（原版顺序）
++                if (liquid) ...<Widget>[
++                  if (liquidConfig.blurRadiusDp > 0)
++                    Positioned.fill(
++                      child: BackdropFilter(
++                        filter: ui.ImageFilter.blur(
++                          sigmaX: liquidConfig.blurRadiusDp,
++                          sigmaY: liquidConfig.blurRadiusDp,
++                        ),
++                        child: const SizedBox.expand(),
++                      ),
++                    ),
++                  if (!disableRefraction &&
++                      liquidConfig.refractionHeightDp > 0 &&
++                      liquidConfig.refractionAmountDp > 0)
++                    Positioned(
++                      left: -pad,
++                      top: -pad,
++                      right: -pad,
++                      bottom: -pad,
++                      child: IgnorePointer(
++                        child: HalcyonLens(
++                          shapeSize: Size(w, h),
++                          cornerRadii: Radius.circular(radius),
++                          refractionHeight: liquidConfig.refractionHeightDp,
++                          refractionAmount: liquidConfig.refractionAmountDp,
++                          chromaticAberration: liquidConfig.chromaticAberration,
++                        ),
++                      ),
++                    ),
++                ],
++                // 2) onDrawSurface：drawRect(containerColor)
++                Positioned.fill(
++                  child: IgnorePointer(child: ColoredBox(color: surface)),
++                ),
++                // 3) highlight：miuix 的 Highlight.Default 无源码，用 45° 双光带
++                //    近似（观感档位按 highlight alpha 走，不另设参数）。
++                Positioned.fill(
++                  child: IgnorePointer(
++                    child: DecoratedBox(
++                      decoration: BoxDecoration(
++                        borderRadius: BorderRadius.circular(radius),
++                        gradient: LinearGradient(
++                          begin: Alignment.topLeft,
++                          end: Alignment.bottomRight,
++                          colors: <Color>[
++                            Colors.white.withValues(alpha: highlight),
++                            Colors.white.withValues(alpha: 0.0),
++                            Colors.white.withValues(alpha: highlight * 0.5),
++                          ],
++                          stops: const <double>[0.0, 0.55, 1.0],
++                        ),
++                      ),
++                    ),
++                  ),
++                ),
++                // 4) content
++                Positioned.fill(child: child),
++              ],
++            );
++          },
++        ),
++      ),
++    );
++  }
++}
+diff --git a/lib/widgets/halcyon/lens.dart b/lib/widgets/halcyon/lens.dart
+new file mode 100644
+index 0000000..ab2e13c
+--- /dev/null
++++ b/lib/widgets/halcyon/lens.dart
+@@ -0,0 +1,155 @@
++// Halcyon Lens.kt 的 Flutter 等价物 —— **结构、签名、守卫位置逐条对齐**。
++//
++// 源：ui-port/halcyon/.../ui/components/liquid/Lens.kt
++//     （adapted from Kyant0/AndroidLiquidGlass, Apache-2.0）
++//
++// 原版是 `BackdropEffectScope.lens(refractionHeight, refractionAmount,
++// depthEffect, chromaticAberration)`：往 drawBackdrop 的 effect 链里挂一个
++// RuntimeShader，并按 `padding < refractionAmount → padding = refractionAmount`
++// 扩大 backdrop 采样区（否则边缘折射会采样越界、出现拖影）。
++//
++// Flutter 的 BackdropFilter 只能覆盖「父级给它的盒子」，所以这里把同一个语义
++// 表达成：**滤镜盒子 = 形状尺寸 + 2×padding**，再用 offset(=-padding) 把纹理
++// 坐标平移回形状原点，形状本身由调用方在外面裁（ClipRRect）。
++//
++// 两个 SkSL 变体分别落在两个 .frag 文件里，按 `chromaticAberration > 0` 选，
++// 与原版 Lens.kt:38-45 的判据一致 —— 不用一个 shader 加分支糊过去。
++import 'dart:ui' as ui;
++
++import 'package:flutter/material.dart';
++
++const String kHalcyonLensAsset = 'shaders/halcyon_lens.frag';
++const String kHalcyonLensDispersionAsset = 'shaders/halcyon_lens_dispersion.frag';
++
++ui.FragmentProgram? _lensProgram;
++ui.FragmentProgram? _dispersionProgram;
++Future<void>? _loadFuture;
++
++/// 预热两个变体（幂等、共享同一个 Future，避免第二个持有者拿到空 program）。
++Future<void> ensureHalcyonLensShaders() => _loadFuture ??= _load();
++
++Future<void> _load() async {
++  try {
++    _lensProgram = await ui.FragmentProgram.fromAsset(kHalcyonLensAsset);
++  } catch (_) {
++    _lensProgram = null;
++  }
++  try {
++    _dispersionProgram = await ui.FragmentProgram.fromAsset(
++      kHalcyonLensDispersionAsset,
++    );
++  } catch (_) {
++    _dispersionProgram = null;
++  }
++}
++
++/// 当前是否具备真折射能力（Impeller + 至少一个变体加载成功）。
++bool get halcyonLensSupported =>
++    ui.ImageFilter.isShaderFilterSupported &&
++    (_lensProgram != null || _dispersionProgram != null);
++
++/// 折射镜片（对应 Lens.kt 的 `lens()`）。
++///
++/// 尺寸约定：本 widget 的盒子 = **形状 + 2×padding**；[shapeSize] 是该形状
++/// 自己的尺寸。调用方负责把本 widget 相对形状外扩 [padding] 摆放，并在外层
++/// 用形状裁剪 —— 这正是原版 `BackdropEffectScope.padding` 的几何含义。
++class HalcyonLens extends StatefulWidget {
++  const HalcyonLens({
++    super.key,
++    required this.shapeSize,
++    required this.cornerRadii,
++    required this.refractionHeight,
++    required this.refractionAmount,
++    this.depthEffect = false,
++    this.chromaticAberration = 0,
++  });
++
++  /// 形状尺寸（逻辑 px，不含 padding）。
++  final Size shapeSize;
++
++  /// 四角半径（逻辑 px，顺序 TL/TR/BR/BL）。
++  final Radius cornerRadii;
++
++  /// 折射带高度（逻辑 px）。
++  final double refractionHeight;
++
++  /// 折射位移（逻辑 px，**正值**；内部按原版取负）。
++  final double refractionAmount;
++
++  final bool depthEffect;
++
++  /// 色散强度；> 0 才走 7 通道色散变体（原版同一判据）。
++  final double chromaticAberration;
++
++  /// 原版 `if (padding < refractionAmount) padding = refractionAmount`。
++  double get padding => refractionAmount;
++
++  @override
++  State<HalcyonLens> createState() => _HalcyonLensState();
++}
++
++class _HalcyonLensState extends State<HalcyonLens> {
++  ui.FragmentShader? _shader;
++  bool _builtDispersion = false;
++
++  @override
++  void initState() {
++    super.initState();
++    ensureHalcyonLensShaders().then((_) {
++      if (mounted) setState(() {});
++    });
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    // Lens.kt:29-30 的两条守卫，位置与原版一致（在拿到 shader 之前就返回）
++    if (!ui.ImageFilter.isShaderFilterSupported) {
++      return const SizedBox.expand();
++    }
++    if (widget.refractionHeight <= 0 || widget.refractionAmount <= 0) {
++      return const SizedBox.expand();
++    }
++    final bool dispersion = widget.chromaticAberration > 0;
++    final ui.FragmentProgram? program = dispersion
++        ? _dispersionProgram
++        : _lensProgram;
++    if (program == null) {
++      return const SizedBox.expand();
++    }
++    // 变体切换时换实例（同一 program 的 shader 才能复用）
++    if (_shader == null || _builtDispersion != dispersion) {
++      _shader = program.fragmentShader();
++      _builtDispersion = dispersion;
++    }
++    final ui.FragmentShader shader = _shader!;
++    final double dpr = MediaQuery.devicePixelRatioOf(context);
++    return LayoutBuilder(
++      builder: (BuildContext context, BoxConstraints c) {
++        final double shapeW = widget.shapeSize.width * dpr;
++        final double shapeH = widget.shapeSize.height * dpr;
++        final double pad = widget.padding * dpr;
++        // 槽 0-1 = u_texSize（引擎注入），从 2 开始写。
++        shader.setFloat(2, shapeW);
++        shader.setFloat(3, shapeH);
++        shader.setFloat(4, -pad);
++        shader.setFloat(5, -pad);
++        final double r = widget.cornerRadii.x * dpr;
++        shader.setFloat(6, r);
++        shader.setFloat(7, r);
++        shader.setFloat(8, r);
++        shader.setFloat(9, r);
++        shader.setFloat(10, widget.refractionHeight * dpr);
++        // 原版 setFloatUniform("refractionAmount", -scaledRefractionAmount)
++        shader.setFloat(11, -widget.refractionAmount * dpr);
++        shader.setFloat(12, widget.depthEffect ? 1.0 : 0.0);
++        if (dispersion) {
++          shader.setFloat(13, widget.chromaticAberration);
++        }
++        return BackdropFilter(
++          filter: ui.ImageFilter.shader(shader),
++          child: const SizedBox.expand(),
++        );
++      },
++    );
++  }
++}
 diff --git a/lib/widgets/halcyon_dock_bar.dart b/lib/widgets/halcyon_dock_bar.dart
 new file mode 100644
 index 0000000..fda4083
@@ -5944,6 +6345,251 @@ index e674cc7..ecd69c6 100644
 +    - shaders/halcyon_lens.frag
 +    - shaders/halcyon_lens_dispersion.frag
      - shaders/flowing_background.frag
+diff --git a/shaders/halcyon_lens.frag b/shaders/halcyon_lens.frag
+new file mode 100644
+index 0000000..311275a
+--- /dev/null
++++ b/shaders/halcyon_lens.frag
+@@ -0,0 +1,101 @@
++#version 460 core
++
++#include <flutter/runtime_effect.glsl>
++
++// ============================================================================
++// Halcyon Lens.kt 的 ROUNDED_RECT_REFRACTION_SHADER —— 逐字移植（无色散变体）。
++//
++// 源文件：ui-port/halcyon/.../ui/components/liquid/Lens.kt:125-159
++//         （其自身 adapted from Kyant0/AndroidLiquidGlass, Apache-2.0）
++//
++// 只做「语言/API 机械替换」，其余一个字符都不改：
++//   1) `uniform shader content;`      -> `uniform sampler2D content;`
++//   2) `content.eval(coord)`          -> `evalContent(coord)`（内部 texture 采样）
++//   3) `half4 main(float2)->half4`    -> `void main()` + `out vec4 fragColor`
++//   4) 增加引擎注入的纹理尺寸 u_texSize（Flutter 只能归一化采样，SkSL 可按像素取）
++// uniform 名保持原版：size / offset / cornerRadii / refractionHeight /
++// refractionAmount / depthEffect —— 改名的移植无法与源码 diff 对照。
++//
++// 【Flutter 管线契约】第一个 float uniform 必须是 vec2（引擎注入输入纹理尺寸，
++// 槽 0-1，Dart 侧不得写）；sampler 声明在所有 float uniform 之后。
++// ============================================================================
++uniform vec2 u_texSize;           // 槽 0-1（引擎注入，勿写）
++
++uniform vec2 size;                // 2-3：形状尺寸（物理 px，不含 padding）
++uniform vec2 offset;              // 4-5：-padding（把纹理坐标平移回形状原点）
++uniform vec4 cornerRadii;         // 6-9：四角半径 TL/TR/BR/BL（物理 px）
++uniform float refractionHeight;   // 10：折射带高度
++uniform float refractionAmount;   // 11：折射位移（Dart 侧传负值 = 向内）
++uniform float depthEffect;        // 12：0/1
++
++uniform sampler2D content;        // 槽 0：引擎绑定为滤镜输入
++
++out vec4 fragColor;
++
++vec4 evalContent(vec2 coord) {
++  vec2 uv = coord / u_texSize;
++#ifdef IMPELLER_TARGET_OPENGLES
++  uv.y = 1.0 - uv.y;
++#endif
++  return texture(content, uv);
++}
++
++// ---- 以下 4 个函数与 Lens.kt 的 ROUNDED_RECT_SDF 字符串逐行一致 ----
++// Pixel centers can land exactly on the inner tangent rectangle (especially at
++// fractional/odd-dp radii). GLSL normalize(0) is undefined and draws a rectangular
++// seam on some GPUs. Keep every gradient finite, including the lens center.
++vec2 safeNormalize(vec2 value) {
++  return value / max(length(value), 0.0001);
++}
++
++float radiusAt(vec2 coord, vec4 radii) {
++  if (coord.x >= 0.0) {
++    if (coord.y <= 0.0) return radii.y;
++    else return radii.z;
++  } else {
++    if (coord.y <= 0.0) return radii.x;
++    else return radii.w;
++  }
++}
++
++float sdRoundedRect(vec2 coord, vec2 halfSize, float radius) {
++  vec2 cornerCoord = abs(coord) - (halfSize - vec2(radius));
++  float outside = length(max(cornerCoord, 0.0)) - radius;
++  float inside = min(max(cornerCoord.x, cornerCoord.y), 0.0);
++  return outside + inside;
++}
++
++vec2 gradSdRoundedRect(vec2 coord, vec2 halfSize, float radius) {
++  vec2 cornerCoord = abs(coord) - (halfSize - vec2(radius));
++  if (cornerCoord.x > 0.0 || cornerCoord.y > 0.0) {
++    return sign(coord) * safeNormalize(max(cornerCoord, 0.0));
++  } else {
++    float gradX = step(cornerCoord.y, cornerCoord.x);
++    return sign(coord) * vec2(gradX, 1.0 - gradX);
++  }
++}
++
++float circleMap(float x) {
++  return 1.0 - sqrt(1.0 - x * x);
++}
++
++void main() {
++  vec2 coord = FlutterFragCoord().xy;
++  vec2 halfSize = size * 0.5;
++  vec2 centeredCoord = (coord + offset) - halfSize;
++  float radius = radiusAt(centeredCoord, cornerRadii);
++
++  float sd = sdRoundedRect(centeredCoord, halfSize, radius);
++  if (-sd >= refractionHeight) {
++    fragColor = evalContent(coord);
++    return;
++  }
++  sd = min(sd, 0.0);
++
++  float d = circleMap(1.0 - -sd / refractionHeight) * refractionAmount;
++  float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
++  vec2 grad = safeNormalize(gradSdRoundedRect(centeredCoord, halfSize, gradRadius) + depthEffect * safeNormalize(centeredCoord));
++
++  vec2 refractedCoord = coord + d * grad;
++  fragColor = evalContent(refractedCoord);
++}
+diff --git a/shaders/halcyon_lens_dispersion.frag b/shaders/halcyon_lens_dispersion.frag
+new file mode 100644
+index 0000000..37b2312
+--- /dev/null
++++ b/shaders/halcyon_lens_dispersion.frag
+@@ -0,0 +1,132 @@
++#version 460 core
++
++#include <flutter/runtime_effect.glsl>
++
++// ============================================================================
++// Halcyon Lens.kt 的 ROUNDED_RECT_REFRACTION_WITH_DISPERSION_SHADER —— 逐字移植。
++//
++// 源文件：ui-port/halcyon/.../ui/components/liquid/Lens.kt:161-233
++//         （其自身 adapted from Kyant0/AndroidLiquidGlass, Apache-2.0）
++//
++// 机械替换同 halcyon_lens.frag（换 API，不换算法）。7 通道色散的
++// 采样顺序、偏移量（0 / ±1/3 / ±2/3 / 1）与权重（r,g,b 分别 /3.5、/3.0，
++// a /7.0）全部保持原样 —— RGB 三通道错位是另一回事，别混。
++//
++// 原版按 chromaticAberration > 0 选着色器（Lens.kt:38-45），这里分成两个 .frag
++// 文件，Dart 侧按同一判据选，保持一处开关一个语义。
++// ============================================================================
++uniform vec2 u_texSize;           // 槽 0-1（引擎注入，勿写）
++
++uniform vec2 size;                // 2-3
++uniform vec2 offset;              // 4-5
++uniform vec4 cornerRadii;         // 6-9
++uniform float refractionHeight;   // 10
++uniform float refractionAmount;   // 11
++uniform float depthEffect;        // 12
++uniform float chromaticAberration; // 13
++
++uniform sampler2D content;        // 槽 0
++
++out vec4 fragColor;
++
++vec4 evalContent(vec2 coord) {
++  vec2 uv = coord / u_texSize;
++#ifdef IMPELLER_TARGET_OPENGLES
++  uv.y = 1.0 - uv.y;
++#endif
++  return texture(content, uv);
++}
++
++// ---- 与 Lens.kt 的 ROUNDED_RECT_SDF 字符串逐行一致 ----
++vec2 safeNormalize(vec2 value) {
++  return value / max(length(value), 0.0001);
++}
++
++float radiusAt(vec2 coord, vec4 radii) {
++  if (coord.x >= 0.0) {
++    if (coord.y <= 0.0) return radii.y;
++    else return radii.z;
++  } else {
++    if (coord.y <= 0.0) return radii.x;
++    else return radii.w;
++  }
++}
++
++float sdRoundedRect(vec2 coord, vec2 halfSize, float radius) {
++  vec2 cornerCoord = abs(coord) - (halfSize - vec2(radius));
++  float outside = length(max(cornerCoord, 0.0)) - radius;
++  float inside = min(max(cornerCoord.x, cornerCoord.y), 0.0);
++  return outside + inside;
++}
++
++vec2 gradSdRoundedRect(vec2 coord, vec2 halfSize, float radius) {
++  vec2 cornerCoord = abs(coord) - (halfSize - vec2(radius));
++  if (cornerCoord.x > 0.0 || cornerCoord.y > 0.0) {
++    return sign(coord) * safeNormalize(max(cornerCoord, 0.0));
++  } else {
++    float gradX = step(cornerCoord.y, cornerCoord.x);
++    return sign(coord) * vec2(gradX, 1.0 - gradX);
++  }
++}
++
++float circleMap(float x) {
++  return 1.0 - sqrt(1.0 - x * x);
++}
++
++void main() {
++  vec2 coord = FlutterFragCoord().xy;
++  vec2 halfSize = size * 0.5;
++  vec2 centeredCoord = (coord + offset) - halfSize;
++  float radius = radiusAt(centeredCoord, cornerRadii);
++
++  float sd = sdRoundedRect(centeredCoord, halfSize, radius);
++  if (-sd >= refractionHeight) {
++    fragColor = evalContent(coord);
++    return;
++  }
++  sd = min(sd, 0.0);
++
++  float d = circleMap(1.0 - -sd / refractionHeight) * refractionAmount;
++  float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
++  vec2 grad = safeNormalize(gradSdRoundedRect(centeredCoord, halfSize, gradRadius) + depthEffect * safeNormalize(centeredCoord));
++
++  vec2 refractedCoord = coord + d * grad;
++  float dispersionIntensity = chromaticAberration * ((centeredCoord.x * centeredCoord.y) / (halfSize.x * halfSize.y));
++  vec2 dispersedCoord = d * grad * dispersionIntensity;
++
++  vec4 color = vec4(0.0);
++
++  vec4 red = evalContent(refractedCoord + dispersedCoord);
++  color.r += red.r / 3.5;
++  color.a += red.a / 7.0;
++
++  vec4 orange = evalContent(refractedCoord + dispersedCoord * (2.0 / 3.0));
++  color.r += orange.r / 3.5;
++  color.g += orange.g / 7.0;
++  color.a += orange.a / 7.0;
++
++  vec4 yellow = evalContent(refractedCoord + dispersedCoord * (1.0 / 3.0));
++  color.r += yellow.r / 3.5;
++  color.g += yellow.g / 3.5;
++  color.a += yellow.a / 7.0;
++
++  vec4 green = evalContent(refractedCoord);
++  color.g += green.g / 3.5;
++  color.a += green.a / 7.0;
++
++  vec4 cyan = evalContent(refractedCoord - dispersedCoord * (1.0 / 3.0));
++  color.g += cyan.g / 3.5;
++  color.b += cyan.b / 3.0;
++  color.a += cyan.a / 7.0;
++
++  vec4 blue = evalContent(refractedCoord - dispersedCoord * (2.0 / 3.0));
++  color.b += blue.b / 3.0;
++  color.a += blue.a / 7.0;
++
++  vec4 purple = evalContent(refractedCoord - dispersedCoord);
++  color.r += purple.r / 7.0;
++  color.b += purple.b / 3.0;
++  color.a += purple.a / 7.0;
++
++  fragColor = color;
++}
 diff --git a/shaders/liquid_glass.frag b/shaders/liquid_glass.frag
 new file mode 100644
 index 0000000..9efea10
