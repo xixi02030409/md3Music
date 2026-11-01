@@ -17,8 +17,7 @@ import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/physics.dart'
-    show SpringDescription, SpringSimulation;
+import 'package:flutter/physics.dart' show SpringDescription, SpringSimulation;
 
 /// 底栏玻璃配色（GlassPill.kt:38-45 LiquidGlass 档：亮 white@0.34 / 暗 #111114@0.38）。
 const double kHalcyonDockLightAlpha = 0.34;
@@ -104,8 +103,10 @@ class HalcyonDockBarState extends State<HalcyonDockBar>
   double _tabWidth = 1;
 
   /// 松手/点击后 pill 的 spring 回弹。
-  late final AnimationController _pillSpring =
-      AnimationController(vsync: this, duration: const Duration(seconds: 1));
+  late final AnimationController _pillSpring = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 1),
+  );
 
   @override
   void initState() {
@@ -129,13 +130,14 @@ class HalcyonDockBarState extends State<HalcyonDockBar>
   }
 
   SpringDescription get _springDesc => SpringDescription(
-        mass: 1,
-        stiffness: kHalcyonDockSpringStiffness,
-        // damping = ratio × 2 × √(mass×stiffness)，ratio=1 无弹跳。
-        damping: kHalcyonDockSpringDampingRatio *
-            2 *
-            math.sqrt(kHalcyonDockSpringStiffness),
-      );
+    mass: 1,
+    stiffness: kHalcyonDockSpringStiffness,
+    // damping = ratio × 2 × √(mass×stiffness)，ratio=1 无弹跳。
+    damping:
+        kHalcyonDockSpringDampingRatio *
+        2 *
+        math.sqrt(kHalcyonDockSpringStiffness),
+  );
 
   void _springPillTo(double target) {
     _pillSpring.animateWith(
@@ -157,11 +159,14 @@ class HalcyonDockBarState extends State<HalcyonDockBar>
     final double x = d.localPosition.dx;
     _dragTravel += d.delta.dx.abs();
     // pill 连续跟手（同上 340：delta/tabWidth 按位置直读）。
-    _pillValue = ((x - kHalcyonDockEdgeInsetDp) / _tabWidth)
-        .clamp(0.0, (widget.tabCount - 1).toDouble());
+    _pillValue = ((x - kHalcyonDockEdgeInsetDp) / _tabWidth).clamp(
+      0.0,
+      (widget.tabCount - 1).toDouble(),
+    );
     // 速度估计 px/s（pill 速度形变，同上 537）。
-    final double dtMs =
-        ((d.sourceTimeStamp ?? Duration.zero) - _lastMoveTime).inMilliseconds.toDouble();
+    final double dtMs = ((d.sourceTimeStamp ?? Duration.zero) - _lastMoveTime)
+        .inMilliseconds
+        .toDouble();
     if (dtMs > 1) {
       _velocity = ((x - _lastMoveX) / dtMs * 1000).clamp(-4000.0, 4000.0);
       _lastMoveTime = d.sourceTimeStamp ?? Duration.zero;
@@ -177,8 +182,7 @@ class HalcyonDockBarState extends State<HalcyonDockBar>
     _dragging = false;
     _velocity = d.velocity.pixelsPerSecond.dx.clamp(-4000.0, 4000.0);
     // 提交判定（同上 322）：位移超 touchSlop 且 round 后变 tab 才切。
-    final double slop =
-        MediaQuery.gestureSettingsOf(context).touchSlop ?? 18.0;
+    final double slop = MediaQuery.gestureSettingsOf(context).touchSlop ?? 18.0;
     final int target = _pillValue.round().clamp(0, widget.tabCount - 1);
     if (_dragTravel.abs() >= slop && target != widget.selectedIndex) {
       widget.onItemTap(target);
@@ -208,118 +212,145 @@ class HalcyonDockBarState extends State<HalcyonDockBar>
     final bool isDark = Theme.of(context).brightness == Brightness.dark;
     final Color panelColor = (isDark ? kHalcyonDockDarkTint : Colors.white)
         .withValues(
-            alpha: isDark ? kHalcyonDockDarkAlpha : kHalcyonDockLightAlpha);
-    final Color contentColor = cs.onSurface;
+          alpha: isDark ? kHalcyonDockDarkAlpha : kHalcyonDockLightAlpha,
+        );
     final Color activeColor = cs.primary;
 
-    return LayoutBuilder(builder: (BuildContext context, BoxConstraints c) {
-      _totalWidth = c.maxWidth;
-      _tabWidth = ((_totalWidth - kHalcyonDockEdgeInsetDp * 2) / widget.tabCount)
-          .clamp(1.0, double.infinity);
-      final double radius = widget.height / 2;
-      final double press = _press;
-      final double pillLeft =
-          kHalcyonDockEdgeInsetDp + _pillValue * _tabWidth;
-      // 速度形变（同上 537-539）：v = velocity/10，clamp ±0.2（归一化口径
-      // 与 Compose 的 px 值不同：这里 /1000 折算 dp 量级，实测再调）。
-      final double v = (_velocity / 10 / 1000).clamp(-0.2, 0.2);
-      final double pillScaleX = 1.0 / (1.0 - (v * 0.75));
-      final double pillScaleY = 1.0 - (v * 0.25);
-      // 橡皮筋（同上 285-287）：fraction×4dp×EaseOut(|fraction|)。
-      final double f =
-          (_rubberOffset / math.max(_totalWidth, 1)).clamp(-1.0, 1.0);
-      final double panelShift =
-          kHalcyonDockRubberBandDp * f.sign * _easeOut(f.abs());
-      // 面板按压膨胀（同上 444：lerp(1, 1+16dp/width, press)）。
-      final double bulge =
-          1.0 + kHalcyonDockPressBulgeDp / math.max(_totalWidth, 1) * press;
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints c) {
+        _totalWidth = c.maxWidth;
+        _tabWidth =
+            ((_totalWidth - kHalcyonDockEdgeInsetDp * 2) / widget.tabCount)
+                .clamp(1.0, double.infinity);
+        final double radius = widget.height / 2;
+        final double press = _press;
+        final double pillLeft =
+            kHalcyonDockEdgeInsetDp + _pillValue * _tabWidth;
+        // 速度形变（同上 537-539）：v = velocity/10，clamp ±0.2（归一化口径
+        // 与 Compose 的 px 值不同：这里 /1000 折算 dp 量级，实测再调）。
+        final double v = (_velocity / 10 / 1000).clamp(-0.2, 0.2);
+        final double pillScaleX = 1.0 / (1.0 - (v * 0.75));
+        final double pillScaleY = 1.0 - (v * 0.25);
+        // 橡皮筋（同上 285-287）：fraction×4dp×EaseOut(|fraction|)。
+        final double f = (_rubberOffset / math.max(_totalWidth, 1)).clamp(
+          -1.0,
+          1.0,
+        );
+        final double panelShift =
+            kHalcyonDockRubberBandDp * f.sign * _easeOut(f.abs());
+        // 面板按压膨胀（同上 444：lerp(1, 1+16dp/width, press)）。
+        final double bulge =
+            1.0 + kHalcyonDockPressBulgeDp / math.max(_totalWidth, 1) * press;
 
-      return GestureDetector(
-        behavior: HitTestBehavior.deferToChild,
-        onHorizontalDragStart: _onDragStart,
-        onHorizontalDragUpdate: _onDragUpdate,
-        onHorizontalDragEnd: _onDragEnd,
-        onHorizontalDragCancel: _onDragCancel,
-        child: Transform.translate(
-          offset: Offset(panelShift, 0),
-          child: Transform.scale(
-            scale: bulge,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(radius),
-              child: BackdropFilter(
-                // LiquidGlass 档 blur 6dp（BottomBarLiquidGlassConfig 默认），
-                // Flutter sigma 口径 ×2 ≈ 12；壁纸预模糊基建下开销可接受。
-                filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-                child: Container(
-                  height: widget.height,
-                  decoration: BoxDecoration(
-                    color: panelColor,
-                    borderRadius: BorderRadius.circular(radius),
-                    // 内缘高光近似 BloomStroke（同上 161-179 白 0.12）。
-                    border: Border.all(
-                      color: Colors.white
-                          .withValues(alpha: isDark ? 0.10 : 0.18),
-                      width: 1,
+        return GestureDetector(
+          behavior: HitTestBehavior.deferToChild,
+          onHorizontalDragStart: _onDragStart,
+          onHorizontalDragUpdate: _onDragUpdate,
+          onHorizontalDragEnd: _onDragEnd,
+          onHorizontalDragCancel: _onDragCancel,
+          child: Transform.translate(
+            offset: Offset(panelShift, 0),
+            child: Transform.scale(
+              scale: bulge,
+              child: DecoratedBox(
+                // 【Halcyon 阴影】GlassPill 投影：10dp 黑（亮 0.20 / 暗 0.10）
+                // + y 偏移 4。必须画在 ClipRRect 外层——裁剪层会吃掉阴影。
+                // 纯白壁纸下 tint 与白描边都隐入背景，投影是胶囊与页面分离
+                // 的唯一硬线索（用户真机实锤：无阴影时底栏在白底图上隐形）。
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(radius),
+                  boxShadow: <BoxShadow>[
+                    BoxShadow(
+                      color: Colors.black.withValues(
+                        alpha: isDark ? 0.10 : 0.20,
+                      ),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
                     ),
-                  ),
-                  child: Stack(
-                    children: <Widget>[
-                      Positioned(
-                        left: pillLeft,
-                        top: 4,
-                        bottom: 4,
-                        width: _tabWidth,
-                        child: Transform.scale(
-                          scaleX: pillScaleX,
-                          scaleY: pillScaleY,
-                          alignment: Alignment.center,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: activeColor
-                                  .withValues(alpha: kHalcyonDockPillAlpha),
-                              borderRadius:
-                                  BorderRadius.circular(radius - 4),
-                              // pill 顶部光泽渐变（近似 lens 高光带）。
-                              gradient: LinearGradient(
-                                begin: Alignment.topCenter,
-                                end: Alignment.center,
-                                colors: <Color>[
-                                  Colors.white
-                                      .withValues(alpha: isDark ? 0.08 : 0.14),
-                                  Colors.transparent,
-                                ],
-                              ),
-                            ),
+                  ],
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(radius),
+                  child: BackdropFilter(
+                    // LiquidGlass 档 blur 6dp（BottomBarLiquidGlassConfig 默认），
+                    // Flutter sigma 口径 ×2 ≈ 12；壁纸预模糊基建下开销可接受。
+                    filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                    child: Container(
+                      height: widget.height,
+                      decoration: BoxDecoration(
+                        color: panelColor,
+                        borderRadius: BorderRadius.circular(radius),
+                        // 内缘高光近似 BloomStroke（同上 161-179 白 0.12）。
+                        border: Border.all(
+                          color: Colors.white.withValues(
+                            alpha: isDark ? 0.10 : 0.18,
                           ),
+                          width: 1,
                         ),
                       ),
-                      Row(
+                      child: Stack(
                         children: <Widget>[
-                          for (int i = 0; i < widget.tabCount; i++)
-                            Expanded(
-                              child: GestureDetector(
-                                behavior: HitTestBehavior.opaque,
-                                onTap: () => _tapItem(i),
-                                child: Center(
-                                  child: widget.itemBuilder(
-                                    context,
-                                    i,
-                                    i == widget.selectedIndex,
+                          Positioned(
+                            left: pillLeft,
+                            top: 4,
+                            bottom: 4,
+                            width: _tabWidth,
+                            child: Transform.scale(
+                              scaleX: pillScaleX,
+                              scaleY: pillScaleY,
+                              alignment: Alignment.center,
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  color: activeColor.withValues(
+                                    alpha: kHalcyonDockPillAlpha,
+                                  ),
+                                  borderRadius: BorderRadius.circular(
+                                    radius - 4,
+                                  ),
+                                  // pill 顶部光泽渐变（近似 lens 高光带）。
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topCenter,
+                                    end: Alignment.center,
+                                    colors: <Color>[
+                                      Colors.white.withValues(
+                                        alpha: isDark ? 0.08 : 0.14,
+                                      ),
+                                      Colors.transparent,
+                                    ],
                                   ),
                                 ),
                               ),
                             ),
+                          ),
+                          Row(
+                            children: <Widget>[
+                              for (int i = 0; i < widget.tabCount; i++)
+                                Expanded(
+                                  child: GestureDetector(
+                                    behavior: HitTestBehavior.opaque,
+                                    onTap: () => _tapItem(i),
+                                    child: Center(
+                                      child: widget.itemBuilder(
+                                        context,
+                                        i,
+                                        i == widget.selectedIndex,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
                         ],
                       ),
-                    ],
+                    ),
                   ),
                 ),
               ),
             ),
           ),
-        ),
-      );
-    });
+        );
+      },
+    );
   }
 }
 
