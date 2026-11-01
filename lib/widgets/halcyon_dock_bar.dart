@@ -1,9 +1,11 @@
 // Halcyon 液态玻璃悬浮底栏（Flutter 移植版）。
 // 蓝本：Halcyon (Kotlin Compose) ui/components/FloatingBottomBar.kt +
 // ui/animation/DampedDragAnimation.kt 的可见行为子集（行号见注释）：
-//   - 玻璃面板：BackdropFilter 模糊 + 半透明底 + 内缘高光（Compose 端的
-//     lens 折射/陀螺仪光源 Flutter 无对应 shader 管线，用高光描边 + pill
-//     顶部光泽渐变近似；玻璃色参数照抄 GlassPill.kt:38-45 LiquidGlass 档）。
+//   - 玻璃面板：BackdropFilter 重模糊 + 半透明底 + BloomStroke 双光源渐变
+//     高光（-45°，同上 161-179 白 0.12；Flutter 端用面板渐变近似）。
+//   - 液态镜片 pill：dart:ui ImageFilter.shader（Impeller）真折射移植
+//     （Kyant0/AndroidLiquidGlass Lens：边缘折射 + 色散 + 高光），见
+//     liquid_glass.dart；Skia/软件渲染自动退化实底 pill，不崩。
 //   - pill 指示器：primary 15% 实底（FloatingBottomBar.kt:569 accent 0.15），
 //     拖动跟手、松手 spring 回弹（同文件 328：dampingRatio 1 / stiffness 300）。
 //   - 拖动滑切：手指横向拖动连续扫过 tab（DampedDragAnimation 语义），
@@ -19,9 +21,12 @@ import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart' show SpringDescription, SpringSimulation;
 
-/// 底栏玻璃配色（GlassPill.kt:38-45 LiquidGlass 档：亮 white@0.34 / 暗 #111114@0.38）。
-const double kHalcyonDockLightAlpha = 0.34;
-const double kHalcyonDockDarkAlpha = 0.38;
+import 'liquid_glass.dart';
+
+/// 底栏玻璃配色（GlassPill.kt:38-45，Blur 档 0.56/0.58 与 LiquidGlass 档
+/// 0.34/0.38 之间取重——重模糊下要保证暗壁纸上"暗玻璃"读感，实机调校档）。
+const double kHalcyonDockLightAlpha = 0.45;
+const double kHalcyonDockDarkAlpha = 0.52;
 const Color kHalcyonDockDarkTint = Color(0xFF111114);
 
 /// pill 指示器底色 alpha（FloatingBottomBar.kt:569 accent 0.15）。
@@ -272,9 +277,9 @@ class HalcyonDockBarState extends State<HalcyonDockBar>
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(radius),
                   child: BackdropFilter(
-                    // LiquidGlass 档 blur 6dp（BottomBarLiquidGlassConfig 默认），
-                    // Flutter sigma 口径 ×2 ≈ 12；壁纸预模糊基建下开销可接受。
-                    filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                    // 重模糊（真液态玻璃读感的下限；Blur 档 4dp→Flutter sigma
+                    // 口径 ×3 ≈ 20，实机调校档）。
+                    filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
                     child: Container(
                       height: widget.height,
                       decoration: BoxDecoration(
@@ -322,6 +327,32 @@ class HalcyonDockBarState extends State<HalcyonDockBar>
                               ),
                             ),
                           ),
+                          // BloomStroke 双光源玻璃面高光（-45°：左上主光带 +
+                          // 右下副光带，同上 161-179 白 0.12；画在内容下层 =
+                          // 高光在玻璃面上，图标文字浮于其上）。
+                          Positioned.fill(
+                            child: IgnorePointer(
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(radius),
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
+                                    colors: <Color>[
+                                      Colors.white.withValues(
+                                        alpha: isDark ? 0.12 : 0.20,
+                                      ),
+                                      Colors.white.withValues(alpha: 0.0),
+                                      Colors.white.withValues(
+                                        alpha: isDark ? 0.06 : 0.10,
+                                      ),
+                                    ],
+                                    stops: const <double>[0.0, 0.55, 1.0],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
                           Row(
                             children: <Widget>[
                               for (int i = 0; i < widget.tabCount; i++)
@@ -339,6 +370,24 @@ class HalcyonDockBarState extends State<HalcyonDockBar>
                                   ),
                                 ),
                             ],
+                          ),
+                          // 液态镜片 pill：画在内容【上层】，把底下图标/文字
+                          // 折射弯曲（真液态玻璃本体，Kyant0 Lens 同款）；
+                          // 拖动时跟 pill 一起平移+速度形变。IgnorePointer
+                          // 放行点击；Skia 端返回空盒 = 实底 pill 兜底不崩。
+                          Positioned(
+                            left: pillLeft,
+                            top: 4,
+                            bottom: 4,
+                            width: _tabWidth,
+                            child: IgnorePointer(
+                              child: Transform.scale(
+                                scaleX: pillScaleX,
+                                scaleY: pillScaleY,
+                                alignment: Alignment.center,
+                                child: LiquidGlassLens(radius: radius - 4),
+                              ),
+                            ),
                           ),
                         ],
                       ),
