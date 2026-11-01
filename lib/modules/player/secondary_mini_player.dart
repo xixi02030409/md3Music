@@ -11,6 +11,7 @@ import 'package:flutter/physics.dart';
 import '../../core/theme/motion_constants.dart';
 import '../../core/build_flags.dart';
 import '../../core/layout/bottom_chrome_dimens.dart';
+import '../../core/layout/bottom_chrome_scope.dart';
 import '../../core/layout/display_space.dart';
 import '../../core/layout/ime_collapse.dart';
 import '../../core/layout/page_title_alignment.dart';
@@ -258,21 +259,19 @@ class _SecondaryMiniPlayerHostState extends State<SecondaryMiniPlayerHost> {
     // widget 实例 → 胶囊 State 每帧 build（O1 实测：飞行窗口后段 ≈17 帧全中，
     // 即使条体已走 `child:` 也救不回）。提到 builder 外后，逐帧只重挂**同一
     // widget 实例**，其 Element 见实例相同即短路（AGENTS §10）。
-    final Widget capsule = Positioned(
-      left: 0,
-      right: 0,
-      bottom: 0,
-      child: ImeCollapse(
-        child: ValueListenableBuilder<double>(
-          valueListenable: kSecondaryPlayerOpacity,
-          builder: (context, opacity, child) => Opacity(
-            opacity: opacity,
-            child: child,
-          ),
-          child: SecondaryMiniPlayer(
-            collapsed: _collapsed,
-            onRequestExpand: _expandManually,
-          ),
+    // 【Halcyon 底栏·坞位抬升】胶囊本体（不含 Positioned）：extendBody 后
+    // body 延伸到玻璃底栏槽位后面，bottom:0 会被后画的底栏盖住——常驻条
+    // 已有 kMiniPlayerDockLift 修复，悬浮胶囊此前漏了同一课（真机实锤）。
+    // 胶囊保持单实例（O1 口径），抬升由 _buildHost 的 AnimatedBuilder 只
+    // 重挂 Positioned 一层承担。
+    final Widget capsule = ImeCollapse(
+      child: ValueListenableBuilder<double>(
+        valueListenable: kSecondaryPlayerOpacity,
+        builder: (context, opacity, child) =>
+            Opacity(opacity: opacity, child: child),
+        child: SecondaryMiniPlayer(
+          collapsed: _collapsed,
+          onRequestExpand: _expandManually,
         ),
       ),
     );
@@ -280,33 +279,60 @@ class _SecondaryMiniPlayerHostState extends State<SecondaryMiniPlayerHost> {
       child: ListenableBuilder(
         listenable: kTextInputFocused,
         builder: (BuildContext context, Widget? _) {
-          final reserve =
-              (hasSong && !carMode && !isImeVisible(context))
-              ? _kReservedBottom
-              : 0.0;
           final mq = MediaQuery.of(context);
-          final content = Stack(
-            children: [
-              Positioned.fill(
-                child: MediaQuery(
-                  data: mq.copyWith(
-                    padding: mq.padding.copyWith(
-                      bottom: mq.padding.bottom + reserve,
+          // 【Halcyon 底栏·坞位抬升】一次性读坞位状态（collapseStateOf 的
+          // getElementFor 口径，同 mini_player.dart，不建 Inherited 依赖）。
+          final chromeState = BottomChromeScope.collapseStateOf(context);
+          final chromeAnim =
+              chromeState.animation ??
+              const AlwaysStoppedAnimation<double>(1.0);
+          // 抬升端点与 mini_player 同式：slotHeight + kMiniPlayerDockLift。
+          final double dockedBottom = chromeState.hasBottomChrome
+              ? chromeState.slotHeight + kMiniPlayerDockLift
+              : 0.0;
+          final bool hasSongVisible =
+              hasSong && !carMode && !isImeVisible(context);
+          return AnimatedBuilder(
+            animation: chromeAnim,
+            child: capsule,
+            builder: (BuildContext context, Widget? capsuleBody) {
+              final double t = chromeAnim.value.clamp(0.0, 1.0);
+              // 底栏收起时胶囊跟着沉到屏底（lift → 0），与常驻条同一节奏。
+              final double lift = dockedBottom * (1.0 - t);
+              // 列表底部预留：胶囊本体 76dp + 槽位占用（上游由 Scaffold 给
+              // body 自动避让，extendBody 后改由本注入承担，随收起收回）。
+              final double reserve = hasSongVisible
+                  ? _kReservedBottom + chromeState.slotHeight * (1.0 - t)
+                  : 0.0;
+              final content = Stack(
+                children: [
+                  Positioned.fill(
+                    child: MediaQuery(
+                      data: mq.copyWith(
+                        padding: mq.padding.copyWith(
+                          bottom: mq.padding.bottom + reserve,
+                        ),
+                      ),
+                      child: child,
                     ),
                   ),
-                  child: child,
-                ),
-              ),
-              capsule,
-            ],
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: lift,
+                    child: capsuleBody!,
+                  ),
+                ],
+              );
+              // 标记本宿主正在承载悬浮条，供子树内的嵌套宿主检测后退化透传。
+              return autoCollapse
+                  ? NotificationListener<ScrollNotification>(
+                      onNotification: _onScroll,
+                      child: content,
+                    )
+                  : content;
+            },
           );
-          // 标记本宿主正在承载悬浮条，供子树内的嵌套宿主检测后退化透传。
-          return autoCollapse
-              ? NotificationListener<ScrollNotification>(
-                  onNotification: _onScroll,
-                  child: content,
-                )
-              : content;
         },
       ),
     );
@@ -323,8 +349,7 @@ class _SecondaryPlayerHostScope extends InheritedWidget {
   const _SecondaryPlayerHostScope({required super.child});
 
   static bool of(BuildContext context) =>
-      context
-          .dependOnInheritedWidgetOfExactType<_SecondaryPlayerHostScope>() !=
+      context.dependOnInheritedWidgetOfExactType<_SecondaryPlayerHostScope>() !=
       null;
 
   @override
@@ -461,8 +486,9 @@ double capsuleCoverOpacity(
   double expansion, {
   required bool layerWillDraw,
   double invisibleAt = kCapsuleInvisibleExpansion,
-}) =>
-    (expansion > 0.0 && (layerWillDraw || expansion >= invisibleAt)) ? 0.0 : 1.0;
+}) => (expansion > 0.0 && (layerWillDraw || expansion >= invisibleAt))
+    ? 0.0
+    : 1.0;
 
 /// 由「胶囊可见本体在锚点空间下的矩形」构造形态快照（纯函数）。
 ///
@@ -518,10 +544,7 @@ const double kSecondaryPlayerPadMaxWidth = BottomChromeDimens.discTrackMaxWidth;
 ///
 /// 同一根手指只会有一条识别器路径存活：越过 slop 归拖动识别器，原地按住满 500ms
 /// 归长按识别器。两条路径共用一套偏移/吸附/浮起逻辑，靠这个来源标记区分谁能收尾。
-enum _DiscDragSource {
-  pointerDrag,
-  longPress,
-}
+enum _DiscDragSource { pointerDrag, longPress }
 
 /// 二级页面悬浮播放器本体（[MiniPlayer] 的二级悬浮模式）。
 ///
@@ -613,16 +636,20 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
   /// 拖拽/吸附过程中的水平偏移（相对当前停靠位）。用 ValueNotifier 驱动
   /// Transform.translate，避免每帧 setState（铁律 40.2）。
   final ValueNotifier<double> _dragOffset = ValueNotifier<double>(0);
+
   /// 吸附动画（一次性 forward，禁 repeat —— 铁律 40.1）。
   late final AnimationController _snap;
+
   /// 吸附动画起点（松手时的残余偏移，动画中按曲线归零）。
   double _snapStartOffset = 0;
+
   /// 当前拖拽会话的来源；null = 未被拾起。
   ///
   /// 只有一个会话，因为同一根手指只有一条识别器路径能活下来：移动越过 slop 由拖动
   /// 识别器接手，原地按住满 500ms 由长按识别器接手（此时拖动识别器已被淘汰）。
   /// 所以「拾起后继续拖」必须由长按自己的 move 事件驱动，见 [_onLongPressMoveUpdate]。
   _DiscDragSource? _dragSource;
+
   /// 长按拾起路径上，上一次手指上报的本机 x，用于差分出移动增量
   /// （见 [_onLongPressMoveUpdate]）。
   double? _longPressLastLocalX;
@@ -631,8 +658,10 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
   /// 松手 reverse），不常驻；按压反馈必须跟手，故保持满帧而非挂共享 60fps 节拍
   /// （AGENTS §10.2）。震动走设置页「震动反馈 → 悬浮播放器拖拽」。
   late final AnimationController _lift;
+
   /// 浮起整形：上升用 easeOut（拾起即到位），回落用 easeIn（松手自然落下）。
   late final Animation<double> _liftCurve;
+
   /// 拖拽偏移 + 浮起进度的合并驱动源：两者都要重排同一组 Transform 层，
   /// 合用一个 AnimatedBuilder 才能少一层嵌套、也让浮起复用拖动那层的短路复用。
   late final Listenable _offsetAndLift;
@@ -654,15 +683,19 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
 
   /// 当前跟踪的 pointer（null = 无上拉会话）。
   int? _pullPointer;
+
   /// 起手位置（设计像素）与累计上拉距离。
   double _pullDownX = 0;
   double _pullDownY = 0;
   double _pullDistance = 0;
+
   /// 是否已确认「垂直上拉」手势。up 之后到下一次 down 之前保持 true，
   /// 用来屏蔽同一次手势里后续派发的 tap / 横向拖动回调。
   bool _pullActivated = false;
+
   /// 起手那一刻胶囊**可见本体**的矩形（设计像素、锚点空间）。
   Rect _pullBodyRect = Rect.zero;
+
   /// 速度/加速度估计（向上为正，按事件时间戳差分）。
   double? _pullLastVelocity;
   double? _pullLastY;
@@ -696,8 +729,10 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
   /// 播放进度（0..1）。只驱动 [CustomPaint] 重绘，不走 setState（§10.4.2）。
   final ValueNotifier<double> _progress = ValueNotifier<double>(0);
   Timer? _progressTimer;
+
   /// build 算出的「该不该采样」，与挂起态一起决定定时器是否运行。
   bool _progressWanted = false;
+
   /// 是否绘制进度指示（开关开 + 时长已知）。与采样门分开：暂停时仍要显示当前进度。
   bool _progressPaintOn = false;
   PlayerProvider? _progressPlayer;
@@ -790,7 +825,8 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final bool suspended = state == AppLifecycleState.hidden ||
+    final bool suspended =
+        state == AppLifecycleState.hidden ||
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached;
     if (suspended == _appSuspended) return;
@@ -837,9 +873,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
     // [_onSpinTick]），圆盘实际不转，但 `_spin` 作为 AnimatedBuilder 的唯一
     // 通知源仍每 16ms 推进 → 画面静止也在每 16ms 提交一帧。真在转才挂节拍。
     _shouldSpin =
-        isPlaying &&
-        expansion < _kInvisibleExpansion &&
-        _morph.value > 0;
+        isPlaying && expansion < _kInvisibleExpansion && _morph.value > 0;
     _syncSpin();
   }
 
@@ -862,10 +896,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
   /// [_onSpinTick] 不再被调用，圆盘停在当前角度、零帧提交。
   void _syncSpin() {
     final bool shouldRun =
-        _shouldSpin &&
-        !_tickerModeMuted &&
-        !_appSuspended &&
-        !_reduceMotion;
+        _shouldSpin && !_tickerModeMuted && !_appSuspended && !_reduceMotion;
     if (shouldRun == _boundToDriver) return;
     if (shouldRun) {
       PlayerFrameDriver.instance.addListener(_onSpinTick);
@@ -900,8 +931,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
     // 封面强行扫到"当时的播放相位"角度（同一配置实测 0°→280.8°，上限 360°、
     // 取值取决于手势时刻），展开时又原路倒回 0°。
     _discAngle =
-        (_discAngle + stepRatio * 2 * math.pi * _morph.value) %
-        (2 * math.pi);
+        (_discAngle + stepRatio * 2 * math.pi * _morph.value) % (2 * math.pi);
     // 圆盘旋转期间 `_morph` 已停、listener 不再触发，角度在此续写登记
     // （交棒起飞帧要与其逐角度对齐，见 _registerCollapseState）。
     if (_morph.value > 0) _registerCollapseState();
@@ -969,8 +999,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
   /// 无歌 / 车机模式与卡体早退同款：解绑。幂等。
   void _armDriversAtSettle(BuildContext context) {
     final player = context.read<PlayerProvider>();
-    if (player.currentSong == null ||
-        context.read<CarModeProvider>().enabled) {
+    if (player.currentSong == null || context.read<CarModeProvider>().enabled) {
       _setShouldSpin(0.0, false);
       _haltProgress();
       return;
@@ -1065,10 +1094,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
         }
         return Offstage(
           offstage: standDown,
-          child: TickerMode(
-            enabled: !standDown,
-            child: child!,
-          ),
+          child: TickerMode(enabled: !standDown, child: child!),
         );
       },
     );
@@ -1107,7 +1133,9 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
       _armDrivers(player);
     }
     final cs = Theme.of(context).colorScheme;
-    final useBackgroundImage = context.watch<ThemeProvider>().useBackgroundImage;
+    final useBackgroundImage = context
+        .watch<ThemeProvider>()
+        .useBackgroundImage;
 
     // 完整播放页展开时的交接（取代原「整条按 playerExpansion 淡出」）：
     // 底色/文字在 p∈[0,0.15] 内快速淡出、封面二进制让位给飞行层，
@@ -1334,9 +1362,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
       kSecondaryPlayerDock.value = target;
       // 停靠位提交即时续写登记（此刻 `_morph` 不动，listener 不会触发）。
       _registerCollapseState();
-      unawaited(
-        SettingsRepository().setSecondaryPlayerDockRaw(target.name),
-      );
+      unawaited(SettingsRepository().setSecondaryPlayerDockRaw(target.name));
     }
     if (_reduceMotion) {
       // 系统「移除动画」：瞬时落位——不播 220ms 吸附，残余偏移直接归零。
@@ -1393,8 +1419,8 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
     // 非壁纸档保持实底（resolveMiniPlayerBackground 的 surface 实色）。
     final background = useBackgroundImage
         ? (Theme.of(context).brightness == Brightness.dark
-            ? const Color(0xFF111114).withValues(alpha: 0.42)
-            : Colors.white.withValues(alpha: 0.38))
+              ? const Color(0xFF111114).withValues(alpha: 0.42)
+              : Colors.white.withValues(alpha: 0.38))
         : resolveMiniPlayerBackground(cs, useBackgroundImage: false);
     // 底色随交接淡出：alpha 按 chrome 缩放（p=0 时 chrome=1 → 与原值逐位相等）。
     final chromeBackground = chrome >= 1.0
@@ -1459,123 +1485,128 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
         child: _pullGesture(
           GestureDetector(
             behavior: HitTestBehavior.opaque,
-          onHorizontalDragStart: _onDiscHorizontalDragStart,
-          onHorizontalDragUpdate: (d) => _onDiscHorizontalDragUpdate(d, trackW),
-          onHorizontalDragEnd: (d) => _onDiscHorizontalDragEnd(d, trackW),
-          onHorizontalDragCancel: () => _onDiscHorizontalDragCancel(trackW),
-          // 长按只在该形态真能拖时才注册：一是「浮起=可拖拽」不该对展开态胶囊说谎，
-          // 二是长按识别器一旦进场就会吞掉随后的 tap（按住满 500ms 再松手就连播放页
-          // 都打不开了）。回调全为 null 时它根本不加入 arena，tap 照常派发。
-          // tv: 拖拽圆盘调进度（横向拖 / 长按拾起拖）不适用——纯指针手势无按键
-          // 等价，TV 上经完整播放页（遥控 TabBar/进度条）seek；点击展开/进播放页
-          // 的 onTap 走下方 tap 路径不受影响。
-          onLongPressStart: _discDraggable ? _onLongPressStart : null,
-          onLongPressMoveUpdate: _discDraggable
-              ? (d) => _onLongPressMoveUpdate(d, trackW)
-              : null,
-          onLongPressEnd: _discDraggable ? (_) => _onLongPressEnd(trackW) : null,
-          onLongPressCancel: _discDraggable
-              ? () => _onLongPressEnd(trackW)
-              : null,
-          onTap: () {
-            // 上拉展开已识别（含 up 后 sweep 阶段）不响应点击
-            if (_pullActivated) return;
-            AppHaptics.click(HapticCategory.navigation);
-            if (_morph.value > 0.5) {
-              widget.onRequestExpand(); // 收起态：点击只展开
-            } else {
-              // 展开态：点击进完整播放页 —— 采集此刻的真实几何作为展开起点。
-              // 悬浮胶囊**从不写**全局锚点（只有常驻条写），不传场景的话
-              // panelGeometryFor 只能读到常驻条留下的陈旧矩形或合成兜底，
-              // 面板起点就会与用户点的这个控件对不上。
-              openFullPlayer(context, scene: _captureMorphScene());
-            }
-          },
-          child: _secondaryGlassWrap(
-            // 【Halcyon 二级胶囊玻璃】壁纸档外包 BackdropFilter：模糊身后
-            // 列表内容（extendBody 下列表滚到胶囊后面）。sigma 随 chrome
-            // 交接淡出到 0（p=1 整条不可见时模糊同步消失，不残影）。
-            // 非壁纸档原样透传（实底 Material 不糊）。
-            useBackgroundImage: useBackgroundImage,
-            chrome: chrome,
-            radius: radius,
-            child: Material(
-            key: _pillKey,
-            elevation: 0,
-            // 底色与常驻条同源取色；壁纸档 tint 已在上方 background 处
-            // 升级为 Halcyon 玻璃档（0.38/0.42），alpha 仍按 [chrome] 缩放。
-            color: chromeBackground,
-            borderRadius: BorderRadius.circular(radius),
-            clipBehavior: Clip.antiAlias,
-            child: SizedBox(
-              width: w,
-              height: _disc,
-              child: Stack(
-                children: [
-                // 文字信息 + 播放控制：随宽度收缩淡出，用 OverflowBox 保持
-                // 全宽布局，收缩过程只裁剪不重排，避免文字挤压跳动。
-                // 展开交接时另乘 chrome（与底色同一条曲线）。
-                if (textOpacity > 0.01)
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      ignoring: t > 0.4,
-                      child: Opacity(
-                        opacity: textOpacity * chrome,
-                        child: OverflowBox(
-                          minWidth: 0,
-                          maxWidth: fullW,
-                          alignment: Alignment.centerLeft,
-                          child: SizedBox(width: fullW, child: row),
-                        ),
-                      ),
-                    ),
-                  ),
-                // 贯穿两态的封面：随左半圆平移到圆盘中心（left 恒 0，见上）。
-                // 展开交接时**不整体淡出**，只在飞行层接管时二进制让位
-                // （判据与常驻条封面、播放页 PlayerCoverSlot 同源）。
-                Positioned(
-                  left: 0,
-                  top: 0,
-                  width: _disc,
+            onHorizontalDragStart: _onDiscHorizontalDragStart,
+            onHorizontalDragUpdate: (d) =>
+                _onDiscHorizontalDragUpdate(d, trackW),
+            onHorizontalDragEnd: (d) => _onDiscHorizontalDragEnd(d, trackW),
+            onHorizontalDragCancel: () => _onDiscHorizontalDragCancel(trackW),
+            // 长按只在该形态真能拖时才注册：一是「浮起=可拖拽」不该对展开态胶囊说谎，
+            // 二是长按识别器一旦进场就会吞掉随后的 tap（按住满 500ms 再松手就连播放页
+            // 都打不开了）。回调全为 null 时它根本不加入 arena，tap 照常派发。
+            // tv: 拖拽圆盘调进度（横向拖 / 长按拾起拖）不适用——纯指针手势无按键
+            // 等价，TV 上经完整播放页（遥控 TabBar/进度条）seek；点击展开/进播放页
+            // 的 onTap 走下方 tap 路径不受影响。
+            onLongPressStart: _discDraggable ? _onLongPressStart : null,
+            onLongPressMoveUpdate: _discDraggable
+                ? (d) => _onLongPressMoveUpdate(d, trackW)
+                : null,
+            onLongPressEnd: _discDraggable
+                ? (_) => _onLongPressEnd(trackW)
+                : null,
+            onLongPressCancel: _discDraggable
+                ? () => _onLongPressEnd(trackW)
+                : null,
+            onTap: () {
+              // 上拉展开已识别（含 up 后 sweep 阶段）不响应点击
+              if (_pullActivated) return;
+              AppHaptics.click(HapticCategory.navigation);
+              if (_morph.value > 0.5) {
+                widget.onRequestExpand(); // 收起态：点击只展开
+              } else {
+                // 展开态：点击进完整播放页 —— 采集此刻的真实几何作为展开起点。
+                // 悬浮胶囊**从不写**全局锚点（只有常驻条写），不传场景的话
+                // panelGeometryFor 只能读到常驻条留下的陈旧矩形或合成兜底，
+                // 面板起点就会与用户点的这个控件对不上。
+                openFullPlayer(context, scene: _captureMorphScene());
+              }
+            },
+            child: _secondaryGlassWrap(
+              // 【Halcyon 二级胶囊玻璃】壁纸档外包 BackdropFilter：模糊身后
+              // 列表内容（extendBody 下列表滚到胶囊后面）。sigma 随 chrome
+              // 交接淡出到 0（p=1 整条不可见时模糊同步消失，不残影）。
+              // 非壁纸档原样透传（实底 Material 不糊）。
+              useBackgroundImage: useBackgroundImage,
+              chrome: chrome,
+              radius: radius,
+              child: Material(
+                key: _pillKey,
+                elevation: 0,
+                // 底色与常驻条同源取色；壁纸档 tint 已在上方 background 处
+                // 升级为 Halcyon 玻璃档（0.38/0.42），alpha 仍按 [chrome] 缩放。
+                color: chromeBackground,
+                borderRadius: BorderRadius.circular(radius),
+                clipBehavior: Clip.antiAlias,
+                child: SizedBox(
+                  width: w,
                   height: _disc,
-                  child: Opacity(
-                    key: const ValueKey('secondary-player-cover-handoff'),
-                    opacity: coverOpacity,
-                    child: _cover(t, coverCore),
-                  ),
-                ),
-                // 进度指示：沿胶囊内缘包边一圈（展开态 = 跑道形，收起态 = 正圆，
-                // 同一条轮廓连续变形）。描边落在封面与背景之间的 3dp bezel 上，
-                // 既不压封面也不被圆角裁掉。
-                // 属胶囊装饰性 chrome：随底色一起交接淡出（否则底色已透明、包边
-                // 还留一圈线在屏底）。
-                if (_progressPaintOn)
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      child: Opacity(
-                        opacity: chrome,
-                        child: CustomPaint(
-                          key: const ValueKey('secondary-player-progress'),
-                          painter: _SecondaryProgressPainter(
-                            progress: _progress,
-                            // 轨道压到 0.16：整圈闭合时它必须读作"待走的轨"，
-                            // 再重就把胶囊读成"描边卡片"了（渲染对比后定值）。
-                            trackColor: cs.onSurfaceVariant.withValues(
-                              alpha: 0.16,
+                  child: Stack(
+                    children: [
+                      // 文字信息 + 播放控制：随宽度收缩淡出，用 OverflowBox 保持
+                      // 全宽布局，收缩过程只裁剪不重排，避免文字挤压跳动。
+                      // 展开交接时另乘 chrome（与底色同一条曲线）。
+                      if (textOpacity > 0.01)
+                        Positioned.fill(
+                          child: IgnorePointer(
+                            ignoring: t > 0.4,
+                            child: Opacity(
+                              opacity: textOpacity * chrome,
+                              child: OverflowBox(
+                                minWidth: 0,
+                                maxWidth: fullW,
+                                alignment: Alignment.centerLeft,
+                                child: SizedBox(width: fullW, child: row),
+                              ),
                             ),
-                            activeColor: cs.primary,
                           ),
                         ),
+                      // 贯穿两态的封面：随左半圆平移到圆盘中心（left 恒 0，见上）。
+                      // 展开交接时**不整体淡出**，只在飞行层接管时二进制让位
+                      // （判据与常驻条封面、播放页 PlayerCoverSlot 同源）。
+                      Positioned(
+                        left: 0,
+                        top: 0,
+                        width: _disc,
+                        height: _disc,
+                        child: Opacity(
+                          key: const ValueKey('secondary-player-cover-handoff'),
+                          opacity: coverOpacity,
+                          child: _cover(t, coverCore),
+                        ),
                       ),
-                    ),
+                      // 进度指示：沿胶囊内缘包边一圈（展开态 = 跑道形，收起态 = 正圆，
+                      // 同一条轮廓连续变形）。描边落在封面与背景之间的 3dp bezel 上，
+                      // 既不压封面也不被圆角裁掉。
+                      // 属胶囊装饰性 chrome：随底色一起交接淡出（否则底色已透明、包边
+                      // 还留一圈线在屏底）。
+                      if (_progressPaintOn)
+                        Positioned.fill(
+                          child: IgnorePointer(
+                            child: Opacity(
+                              opacity: chrome,
+                              child: CustomPaint(
+                                key: const ValueKey(
+                                  'secondary-player-progress',
+                                ),
+                                painter: _SecondaryProgressPainter(
+                                  progress: _progress,
+                                  // 轨道压到 0.16：整圈闭合时它必须读作"待走的轨"，
+                                  // 再重就把胶囊读成"描边卡片"了（渲染对比后定值）。
+                                  trackColor: cs.onSurfaceVariant.withValues(
+                                    alpha: 0.16,
+                                  ),
+                                  activeColor: cs.primary,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
           ),
         ),
-        ),
-      ),
       ),
     );
   }
