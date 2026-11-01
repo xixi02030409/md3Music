@@ -3409,10 +3409,10 @@ index b70edd2..03c9fb3 100644
        ),
 diff --git a/lib/widgets/halcyon/floating_bottom_bar.dart b/lib/widgets/halcyon/floating_bottom_bar.dart
 new file mode 100644
-index 0000000..8810aec
+index 0000000..8eaec63
 --- /dev/null
 +++ b/lib/widgets/halcyon/floating_bottom_bar.dart
-@@ -0,0 +1,404 @@
+@@ -0,0 +1,416 @@
 +// 源：halcyon/.../components/FloatingBottomBar.kt（594 行）
 +//     + animation/DampedDragAnimation.kt（222 行，弹簧参数 1:1）
 +//
@@ -3580,6 +3580,18 @@ index 0000000..8810aec
 +    if (old.selectedIndex != widget.selectedIndex) {
 +      _animateTo(widget.selectedIndex.toDouble(), withPress: false);
 +    }
++  }
++
++  /// 页面切换 / 路由跳转会把本 widget 从树上摘走，此时 `onTapUp` 不会再来，
++  /// pressProgress 就永远停在按下那一刻 —— 真机上表现为 pill 一直比胶囊大一圈、
++  /// 边缘挂着一层灰色的高光晕（那层是按 press 出的）。这里强制复位。
++  @override
++  void deactivate() {
++    _press.value = 0;
++    _scaleX.value = 1;
++    _scaleY.value = 1;
++    _velocity.value = 0;
++    super.deactivate();
 +  }
 +
 +  @override
