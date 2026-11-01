@@ -7964,10 +7964,10 @@ index 0000000..470833b
 +}
 diff --git a/lib/widgets/halcyon/highlight.dart b/lib/widgets/halcyon/highlight.dart
 new file mode 100644
-index 0000000..d51d7f0
+index 0000000..bedd273
 --- /dev/null
 +++ b/lib/widgets/halcyon/highlight.dart
-@@ -0,0 +1,325 @@
+@@ -0,0 +1,327 @@
 +// miuix Highlight 的 Flutter 等价物 —— 结构与预设逐条照搬。
 +//
 +// 源：compose-miuix-ui/miuix · miuix-blur/src/commonMain/kotlin/top/yukonga/miuix/kmp/blur/
@@ -8218,7 +8218,9 @@ index 0000000..d51d7f0
 +    );
 +    final double r = (cornerRadius * dpr).clamp(0.0, size.shortestSide * dpr / 2);
 +
-+    // 槽 0-1 = u_size（引擎注入），从 2 开始。
++    // 槽 0-1 = u_size，同样必须手动写（Flutter 不注入任何 uniform）
++    shader.setFloat(0, w);
++    shader.setFloat(1, h);
 +    shader.setFloat(2, halfW);
 +    shader.setFloat(3, halfH);
 +    shader.setFloat(4, halfW.floorToDouble());
@@ -8295,10 +8297,10 @@ index 0000000..d51d7f0
 +}
 diff --git a/lib/widgets/halcyon/lens.dart b/lib/widgets/halcyon/lens.dart
 new file mode 100644
-index 0000000..d256ae1
+index 0000000..be96888
 --- /dev/null
 +++ b/lib/widgets/halcyon/lens.dart
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,173 @@
 +// Halcyon Lens.kt 的 Flutter 等价物 —— **结构、签名、守卫位置逐条对齐**。
 +//
 +// 源：ui-port/halcyon/.../ui/components/liquid/Lens.kt
@@ -8441,7 +8443,13 @@ index 0000000..d256ae1
 +        final double shapeW = widget.shapeSize.width * dpr;
 +        final double shapeH = widget.shapeSize.height * dpr;
 +        final double pad = widget.padding * dpr;
-+        // 槽 0-1 = u_texSize（引擎注入），从 2 开始写。
++        // 【槽 0-1 = u_texSize，必须手动写】
++        // Flutter 不会给 shader filter 注入任何 uniform；项目里唯一跑通的
++        // depth_parallax.frag 也是 Dart 侧手动 setFloat(0, w)/setFloat(1, h)。
++        // 之前这两槽留空 —— u_texSize 恒为 0，uv = coord/0 直接把采样打死，
++        // 整块玻璃退化成色块（"效果差"的真因）。纹理尺寸 = 滤镜盒子 = 形状 + 2×padding。
++        shader.setFloat(0, shapeW + pad * 2);
++        shader.setFloat(1, shapeH + pad * 2);
 +        shader.setFloat(2, shapeW);
 +        shader.setFloat(3, shapeH);
 +        shader.setFloat(4, -pad);
