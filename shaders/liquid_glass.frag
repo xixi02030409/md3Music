@@ -73,10 +73,13 @@ void main() {
   float band = 1.0 - clamp(depth / u_thickness, 0.0, 1.0); // 1 在外缘
   float h = sqrt(max(1.0 - (1.0 - band) * (1.0 - band), 0.0)); // 凸缘剖面
 
-  // 折射位移（uv 空间）：边带内向内拉采样，外缘最强；色散分通道错开
+  // 折射位移（uv 空间）：边带内向内拉采样，外缘最强；色散分通道错开。
+  // 量纲红线（真机彩虹漩涡教训）：amt 峰值 = refract×0.5×thickness_px
+  // （24dp 边带下 rim 位移 ≈16px，读感是"透镜弯"而不是"把别处内容吸进来"）；
+  // 色散是【像素级】错位，直接 chroma_px/width，绝不能再乘 thickness/width。
   float scale = u_thickness / max(u_size.x, 1.0);
-  float amt = u_refract * h * scale;
-  float ca = u_chroma * h * scale;
+  float amt = u_refract * 0.5 * h * scale;
+  float ca = u_chroma * h / max(u_size.x, 1.0);
   vec2 offR = -n * (amt + ca);
   vec2 offG = -n * amt;
   vec2 offB = -n * max(amt - ca, 0.0);
@@ -84,7 +87,7 @@ void main() {
   // 内部 3% 放大（透镜感）
   vec2 mag = (halfSize + p * 0.97) / u_size;
 
-  // 9 tap 近似模糊（u_blur=0 退化为单点）
+  // 9 tap 近似模糊（u_blur=0 退化为单点）；采样坐标 clamp 防边缘拖影
   vec2 px = vec2(1.0) / u_size;
   vec3 col = vec3(0.0);
   float wsum = 0.0;
@@ -92,9 +95,9 @@ void main() {
     for (int j = -1; j <= 1; j++) {
       vec2 o = vec2(float(i), float(j)) * u_blur * px;
       float w = (i == 0 && j == 0) ? 2.0 : 1.0;
-      col.r += texture(u_backdrop, uv2tex(mag + o + offR)).r * w;
-      col.g += texture(u_backdrop, uv2tex(mag + o + offG)).g * w;
-      col.b += texture(u_backdrop, uv2tex(mag + o + offB)).b * w;
+      col.r += texture(u_backdrop, uv2tex(clamp(mag + o + offR, vec2(0.002), vec2(0.998)))).r * w;
+      col.g += texture(u_backdrop, uv2tex(clamp(mag + o + offG, vec2(0.002), vec2(0.998)))).g * w;
+      col.b += texture(u_backdrop, uv2tex(clamp(mag + o + offB, vec2(0.002), vec2(0.998)))).b * w;
       wsum += w;
     }
   }
