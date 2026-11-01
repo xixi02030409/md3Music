@@ -175,7 +175,7 @@ jobs:
           # 退化成色块 pill；且 Flutter 3.47 已把 Impeller opt-out 标记为弃用
           # （引擎日志实测警告）。上游 gradle 默认 enableImpeller=true，不传即启用。
           flutter build apk --release --flavor standard --split-per-abi \
-            --target-platform android-arm64 \
+            --target-platform android-arm64,android-x64 \
             --dart-define=APP_VERSION=halcyon-ui-${{ steps.upstream.outputs.short }}
           ls build/app/outputs/flutter-apk/
 
@@ -187,7 +187,9 @@ jobs:
         run: |
           tag="halcyon-ui-${{ steps.upstream.outputs.short }}"
           apk=$(ls build/app/outputs/flutter-apk/*arm64*v8a*release*.apk | head -1)
+          apk_x64=$(ls build/app/outputs/flutter-apk/*x86_64*release*.apk | head -1 || true)
           asset="md3music-halcyon-arm64-v8a.apk"
+          asset_x64="md3music-halcyon-x86_64.apk"
           notes="自动同步上游 md3Music ${{ steps.upstream.outputs.base }}@${{ steps.upstream.outputs.short }} 并应用 Halcyon 风格 UI 成品补丁（悬浮毛玻璃底栏 + 悬浮胶囊迷你播放条 + 全局玻璃卡片 + 文字底模糊衬 + 底栏滚动隐藏 + 横屏玻璃 rail，保留进度环绕描边效果）。"
           if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "release $tag 已存在，覆盖资产 $asset"
@@ -199,9 +201,18 @@ jobs:
                   gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$aid" || true
                 done
             gh release upload "$tag" -R "$GITHUB_REPOSITORY" --clobber "$apk#$asset"
+            if [ -n "${apk_x64:-}" ]; then
+              gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq \
+                ".assets[] | select(.name==\"$asset_x64\") | .id" \
+                | while read -r aid; do
+                    gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$aid" || true
+                  done
+              gh release upload "$tag" -R "$GITHUB_REPOSITORY" --clobber "$apk_x64#$asset_x64"
+            fi
           else
             gh release create "$tag" -R "$GITHUB_REPOSITORY" \
               --title "Halcyon UI @ 上游 ${{ steps.upstream.outputs.date }} (${{ steps.upstream.outputs.short }})" \
               --notes "$notes" \
-              "$apk#$asset"
+              "$apk#$asset" \
+              ${apk_x64:+"$apk_x64#$asset_x64"}
           fi
