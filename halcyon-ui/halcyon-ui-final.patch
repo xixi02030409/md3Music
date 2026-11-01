@@ -639,14 +639,14 @@ index ea75e95..131dd24 100644
                );
              },
 diff --git a/lib/modules/player/secondary_mini_player.dart b/lib/modules/player/secondary_mini_player.dart
-index c52a20c..15731b2 100644
+index c52a20c..32cbc4f 100644
 --- a/lib/modules/player/secondary_mini_player.dart
 +++ b/lib/modules/player/secondary_mini_player.dart
 @@ -1,6 +1,6 @@
  import 'dart:async';
  import 'dart:math' as math;
 -import 'dart:ui' show PathMetric;
-+import 'dart:ui' show BlurStyle, ImageFilter, MaskFilter, PathMetric;
++import 'dart:ui' show BlurStyle, MaskFilter, PathMetric;
  
  import 'package:material_ui/material_ui.dart';
  import 'package:flutter/gestures.dart';
@@ -658,7 +658,15 @@ index c52a20c..15731b2 100644
  import '../../core/layout/display_space.dart';
  import '../../core/layout/ime_collapse.dart';
  import '../../core/layout/page_title_alignment.dart';
-@@ -258,21 +259,19 @@ class _SecondaryMiniPlayerHostState extends State<SecondaryMiniPlayerHost> {
+@@ -22,6 +23,7 @@ import '../../data/repositories/settings_repository.dart';
+ import '../../providers/car_mode_provider.dart';
+ import '../../providers/player_provider.dart';
+ import '../../providers/theme_provider.dart';
++import '../../widgets/liquid_glass.dart';
+ import '../../widgets/smart_artwork_image.dart';
+ import 'full_player_route.dart';
+ import 'bottom_bar_morph_overlay.dart';
+@@ -258,21 +260,19 @@ class _SecondaryMiniPlayerHostState extends State<SecondaryMiniPlayerHost> {
      // widget 实例 → 胶囊 State 每帧 build（O1 实测：飞行窗口后段 ≈17 帧全中，
      // 即使条体已走 `child:` 也救不回）。提到 builder 外后，逐帧只重挂**同一
      // widget 实例**，其 Element 见实例相同即短路（AGENTS §10）。
@@ -693,7 +701,7 @@ index c52a20c..15731b2 100644
          ),
        ),
      );
-@@ -280,33 +279,60 @@ class _SecondaryMiniPlayerHostState extends State<SecondaryMiniPlayerHost> {
+@@ -280,33 +280,60 @@ class _SecondaryMiniPlayerHostState extends State<SecondaryMiniPlayerHost> {
        child: ListenableBuilder(
          listenable: kTextInputFocused,
          builder: (BuildContext context, Widget? _) {
@@ -777,7 +785,7 @@ index c52a20c..15731b2 100644
          },
        ),
      );
-@@ -323,8 +349,7 @@ class _SecondaryPlayerHostScope extends InheritedWidget {
+@@ -323,8 +350,7 @@ class _SecondaryPlayerHostScope extends InheritedWidget {
    const _SecondaryPlayerHostScope({required super.child});
  
    static bool of(BuildContext context) =>
@@ -787,7 +795,7 @@ index c52a20c..15731b2 100644
        null;
  
    @override
-@@ -461,8 +486,9 @@ double capsuleCoverOpacity(
+@@ -461,8 +487,9 @@ double capsuleCoverOpacity(
    double expansion, {
    required bool layerWillDraw,
    double invisibleAt = kCapsuleInvisibleExpansion,
@@ -799,7 +807,7 @@ index c52a20c..15731b2 100644
  
  /// 由「胶囊可见本体在锚点空间下的矩形」构造形态快照（纯函数）。
  ///
-@@ -518,10 +544,7 @@ const double kSecondaryPlayerPadMaxWidth = BottomChromeDimens.discTrackMaxWidth;
+@@ -518,10 +545,7 @@ const double kSecondaryPlayerPadMaxWidth = BottomChromeDimens.discTrackMaxWidth;
  ///
  /// 同一根手指只会有一条识别器路径存活：越过 slop 归拖动识别器，原地按住满 500ms
  /// 归长按识别器。两条路径共用一套偏移/吸附/浮起逻辑，靠这个来源标记区分谁能收尾。
@@ -811,7 +819,7 @@ index c52a20c..15731b2 100644
  
  /// 二级页面悬浮播放器本体（[MiniPlayer] 的二级悬浮模式）。
  ///
-@@ -613,16 +636,20 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+@@ -613,16 +637,20 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
    /// 拖拽/吸附过程中的水平偏移（相对当前停靠位）。用 ValueNotifier 驱动
    /// Transform.translate，避免每帧 setState（铁律 40.2）。
    final ValueNotifier<double> _dragOffset = ValueNotifier<double>(0);
@@ -832,7 +840,7 @@ index c52a20c..15731b2 100644
    /// 长按拾起路径上，上一次手指上报的本机 x，用于差分出移动增量
    /// （见 [_onLongPressMoveUpdate]）。
    double? _longPressLastLocalX;
-@@ -631,8 +658,10 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+@@ -631,8 +659,10 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
    /// 松手 reverse），不常驻；按压反馈必须跟手，故保持满帧而非挂共享 60fps 节拍
    /// （AGENTS §10.2）。震动走设置页「震动反馈 → 悬浮播放器拖拽」。
    late final AnimationController _lift;
@@ -843,7 +851,7 @@ index c52a20c..15731b2 100644
    /// 拖拽偏移 + 浮起进度的合并驱动源：两者都要重排同一组 Transform 层，
    /// 合用一个 AnimatedBuilder 才能少一层嵌套、也让浮起复用拖动那层的短路复用。
    late final Listenable _offsetAndLift;
-@@ -654,15 +683,19 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+@@ -654,15 +684,19 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
  
    /// 当前跟踪的 pointer（null = 无上拉会话）。
    int? _pullPointer;
@@ -863,7 +871,7 @@ index c52a20c..15731b2 100644
    /// 速度/加速度估计（向上为正，按事件时间戳差分）。
    double? _pullLastVelocity;
    double? _pullLastY;
-@@ -696,8 +729,10 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+@@ -696,8 +730,10 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
    /// 播放进度（0..1）。只驱动 [CustomPaint] 重绘，不走 setState（§10.4.2）。
    final ValueNotifier<double> _progress = ValueNotifier<double>(0);
    Timer? _progressTimer;
@@ -874,7 +882,7 @@ index c52a20c..15731b2 100644
    /// 是否绘制进度指示（开关开 + 时长已知）。与采样门分开：暂停时仍要显示当前进度。
    bool _progressPaintOn = false;
    PlayerProvider? _progressPlayer;
-@@ -790,7 +825,8 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+@@ -790,7 +826,8 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
  
    @override
    void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -884,7 +892,7 @@ index c52a20c..15731b2 100644
          state == AppLifecycleState.paused ||
          state == AppLifecycleState.detached;
      if (suspended == _appSuspended) return;
-@@ -837,9 +873,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+@@ -837,9 +874,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
      // [_onSpinTick]），圆盘实际不转，但 `_spin` 作为 AnimatedBuilder 的唯一
      // 通知源仍每 16ms 推进 → 画面静止也在每 16ms 提交一帧。真在转才挂节拍。
      _shouldSpin =
@@ -895,7 +903,7 @@ index c52a20c..15731b2 100644
      _syncSpin();
    }
  
-@@ -862,10 +896,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+@@ -862,10 +897,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
    /// [_onSpinTick] 不再被调用，圆盘停在当前角度、零帧提交。
    void _syncSpin() {
      final bool shouldRun =
@@ -907,7 +915,7 @@ index c52a20c..15731b2 100644
      if (shouldRun == _boundToDriver) return;
      if (shouldRun) {
        PlayerFrameDriver.instance.addListener(_onSpinTick);
-@@ -900,8 +931,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+@@ -900,8 +932,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
      // 封面强行扫到"当时的播放相位"角度（同一配置实测 0°→280.8°，上限 360°、
      // 取值取决于手势时刻），展开时又原路倒回 0°。
      _discAngle =
@@ -917,7 +925,7 @@ index c52a20c..15731b2 100644
      // 圆盘旋转期间 `_morph` 已停、listener 不再触发，角度在此续写登记
      // （交棒起飞帧要与其逐角度对齐，见 _registerCollapseState）。
      if (_morph.value > 0) _registerCollapseState();
-@@ -969,8 +999,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+@@ -969,8 +1000,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
    /// 无歌 / 车机模式与卡体早退同款：解绑。幂等。
    void _armDriversAtSettle(BuildContext context) {
      final player = context.read<PlayerProvider>();
@@ -927,7 +935,7 @@ index c52a20c..15731b2 100644
        _setShouldSpin(0.0, false);
        _haltProgress();
        return;
-@@ -1065,10 +1094,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+@@ -1065,10 +1095,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
          }
          return Offstage(
            offstage: standDown,
@@ -939,7 +947,7 @@ index c52a20c..15731b2 100644
          );
        },
      );
-@@ -1107,7 +1133,9 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+@@ -1107,7 +1134,9 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
        _armDrivers(player);
      }
      final cs = Theme.of(context).colorScheme;
@@ -950,7 +958,7 @@ index c52a20c..15731b2 100644
  
      // 完整播放页展开时的交接（取代原「整条按 playerExpansion 淡出」）：
      // 底色/文字在 p∈[0,0.15] 内快速淡出、封面二进制让位给飞行层，
-@@ -1334,9 +1362,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+@@ -1334,9 +1363,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
        kSecondaryPlayerDock.value = target;
        // 停靠位提交即时续写登记（此刻 `_morph` 不动，listener 不会触发）。
        _registerCollapseState();
@@ -961,7 +969,7 @@ index c52a20c..15731b2 100644
      }
      if (_reduceMotion) {
        // 系统「移除动画」：瞬时落位——不播 220ms 吸附，残余偏移直接归零。
-@@ -1387,10 +1413,15 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+@@ -1387,10 +1414,20 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
        expansion,
        layerWillDraw: PlayerCoverMorphBus.instance.coverLayerWillDraw,
      );
@@ -973,15 +981,20 @@ index c52a20c..15731b2 100644
 +    // （亮 White@0.38 / 暗 #111114@0.42，与一级常驻条玻璃胶囊同档——
 +    // 旧值 cs.surface@0.2 太薄，胶囊内文字直接叠在壁纸上，可读性差）。
 +    // 非壁纸档保持实底（resolveMiniPlayerBackground 的 surface 实色）。
++    // 亮/暗档只影响玻璃 tint 与 BloomStroke 两处白度，取一次复用。
++    final bool isDark = Theme.of(context).brightness == Brightness.dark;
 +    final background = useBackgroundImage
-+        ? (Theme.of(context).brightness == Brightness.dark
-+              ? const Color(0xFF111114).withValues(alpha: 0.42)
-+              : Colors.white.withValues(alpha: 0.38))
++        ? (isDark
++              // 【液态玻璃】tint 与底栏统一到 GlassPill 的 LiquidGlass 档
++              // （暗 0.38 / 亮 0.34）：镜片负责折射与高光，这层只负责压暗
++              // 保证白字可读，压太重会把折射出来的底图细节糊掉。
++              ? const Color(0xFF111114).withValues(alpha: 0.38)
++              : Colors.white.withValues(alpha: 0.34))
 +        : resolveMiniPlayerBackground(cs, useBackgroundImage: false);
      // 底色随交接淡出：alpha 按 chrome 缩放（p=0 时 chrome=1 → 与原值逐位相等）。
      final chromeBackground = chrome >= 1.0
          ? background
-@@ -1454,115 +1485,128 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+@@ -1454,115 +1491,182 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
          child: _pullGesture(
            GestureDetector(
              behavior: HitTestBehavior.opaque,
@@ -1103,8 +1116,10 @@ index c52a20c..15731b2 100644
 +                key: _pillKey,
 +                elevation: 0,
 +                // 底色与常驻条同源取色；壁纸档 tint 已在上方 background 处
-+                // 升级为 Halcyon 玻璃档（0.38/0.42），alpha 仍按 [chrome] 缩放。
-+                color: chromeBackground,
++                // 升级为 Halcyon 玻璃档（0.34/0.38），alpha 仍按 [chrome] 缩放。
++                // 【液态玻璃】壁纸档这里必须是透明：真正的底色由 Stack 里的
++                // 镜片 + tint 层出，Material 再铺一层实色会把折射结果盖死。
++                color: useBackgroundImage ? Colors.transparent : chromeBackground,
 +                borderRadius: BorderRadius.circular(radius),
 +                clipBehavior: Clip.antiAlias,
 +                child: SizedBox(
@@ -1136,6 +1151,59 @@ index c52a20c..15731b2 100644
 -                              alpha: 0.16,
 +                  child: Stack(
 +                    children: [
++                      // 【液态玻璃】整面折射镜片（与底栏同一套 shader 与参数）：
++                      // 边缘折射 + 色散 + 双光源高光。必须垫在内容最底层，
++                      // 且随 chrome 淡出（整条不可见时不残留一层玻璃）。
++                      // 非壁纸档（实底）不挂：背后是不透明 Material 色，无内容可折。
++                      if (useBackgroundImage)
++                        Positioned.fill(
++                          child: IgnorePointer(
++                            child: Opacity(
++                              opacity: chrome,
++                              child: LiquidGlassLens(radius: radius),
++                            ),
++                          ),
++                        ),
++                      // 玻璃压暗 tint：画在镜片之上、内容之下 —— 压的是"折出来的
++                      // 底图"，不是底图本身，所以细节还在、白字可读。
++                      if (useBackgroundImage)
++                        Positioned.fill(
++                          child: IgnorePointer(
++                            child: DecoratedBox(
++                              decoration: BoxDecoration(
++                                color: chromeBackground,
++                              ),
+                             ),
+-                            activeColor: cs.primary,
+                           ),
+                         ),
++                      // BloomStroke 面板级高光（-45°：左上主光带 + 右下副光带），
++                      // 与底栏 halcyon_dock_bar 第 4 层同参数同观感 —— 两处玻璃
++                      // 必须像同一块材料，否则胶囊会读成另一种材质。
++                      if (useBackgroundImage)
++                        Positioned.fill(
++                          child: IgnorePointer(
++                            child: DecoratedBox(
++                              decoration: BoxDecoration(
++                                borderRadius: BorderRadius.circular(radius),
++                                gradient: LinearGradient(
++                                  begin: Alignment.topLeft,
++                                  end: Alignment.bottomRight,
++                                  colors: <Color>[
++                                    Colors.white.withValues(
++                                      alpha: isDark ? 0.12 : 0.20,
++                                    ),
++                                    Colors.white.withValues(alpha: 0.0),
++                                    Colors.white.withValues(
++                                      alpha: isDark ? 0.06 : 0.10,
++                                    ),
++                                  ],
++                                  stops: const <double>[0.0, 0.55, 1.0],
++                                ),
++                              ),
++                            ),
++                          ),
++                        ),
 +                      // 文字信息 + 播放控制：随宽度收缩淡出，用 OverflowBox 保持
 +                      // 全宽布局，收缩过程只裁剪不重排，避免文字挤压跳动。
 +                      // 展开交接时另乘 chrome（与底色同一条曲线）。
@@ -1151,10 +1219,9 @@ index c52a20c..15731b2 100644
 +                                alignment: Alignment.centerLeft,
 +                                child: SizedBox(width: fullW, child: row),
 +                              ),
-                             ),
--                            activeColor: cs.primary,
-                           ),
-                         ),
++                            ),
++                          ),
++                        ),
 +                      // 贯穿两态的封面：随左半圆平移到圆盘中心（left 恒 0，见上）。
 +                      // 展开交接时**不整体淡出**，只在飞行层接管时二进制让位
 +                      // （判据与常驻条封面、播放页 PlayerCoverSlot 同源）。
@@ -1209,7 +1276,7 @@ index c52a20c..15731b2 100644
        ),
      );
    }
-@@ -1586,6 +1630,28 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
+@@ -1586,6 +1690,29 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
      );
    }
  
@@ -1226,19 +1293,20 @@ index c52a20c..15731b2 100644
 +    required Widget child,
 +  }) {
 +    if (!useBackgroundImage) return child;
++    // 【液态玻璃】这里原本是一层 BackdropFilter 高斯模糊（sigma 随 chrome 收放）。
++    // 模糊与真折射是两种做法、叠在一起就是"两层处理"，用户明确否掉了后者：
++    // 玻璃面改由 Stack 底层的 LiquidGlassLens 出（折射 + 色散 + 双光源高光），
++    // 本层只留圆角裁剪，负责把镜片与内容裁进胶囊。
 +    return ClipRRect(
 +      borderRadius: BorderRadius.circular(radius),
-+      child: BackdropFilter(
-+        filter: ImageFilter.blur(sigmaX: 18 * chrome, sigmaY: 18 * chrome),
-+        child: child,
-+      ),
++      child: child,
 +    );
 +  }
 +
    /// 展开态的文字信息 + 播放控制（封面已抽为贯穿两态的独立元素，故此处
    /// 左侧留出封面空位）。点击整体进完整播放页（由外层 GestureDetector 处理）。
    ///
-@@ -2055,10 +2121,12 @@ class _SecondaryProgressPainter extends CustomPainter {
+@@ -2055,10 +2182,12 @@ class _SecondaryProgressPainter extends CustomPainter {
      canvas.drawPath(_rimPath, _stroke(trackColor));
      final p = progress.value.clamp(0.0, 1.0);
      if (p <= 0) return;
@@ -1255,7 +1323,7 @@ index c52a20c..15731b2 100644
    }
  
    Paint _stroke(Color color) => Paint()
-@@ -2067,6 +2135,14 @@ class _SecondaryProgressPainter extends CustomPainter {
+@@ -2067,6 +2196,14 @@ class _SecondaryProgressPainter extends CustomPainter {
      ..strokeWidth = _kProgressStroke
      ..strokeCap = StrokeCap.round;
  
@@ -2068,10 +2136,10 @@ index 0000000..80a113e
 +}
 diff --git a/lib/widgets/liquid_glass.dart b/lib/widgets/liquid_glass.dart
 new file mode 100644
-index 0000000..f16a37b
+index 0000000..d83eea2
 --- /dev/null
 +++ b/lib/widgets/liquid_glass.dart
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,118 @@
 +// 液态玻璃折射镜片（Kyant0/AndroidLiquidGlass Lens 的 Flutter 移植件）。
 +//
 +// Halcyon 蓝本（Kotlin Compose）的 alpha0 内容折射层 + GlassPill lens 用的是
@@ -2099,17 +2167,22 @@ index 0000000..f16a37b
 +const double kLensEdgeDp = 3.0;
 +
 +ui.FragmentProgram? _program;
-+bool _loadStarted = false;
++Future<void>? _loadFuture;
 +
-+/// 预热：发起 shader 加载（幂等）。加载失败按永久退化处理（与
-+/// FlowingBackground 的 shaderUnavailable 同口径）。
-+Future<void> ensureLiquidGlassShader() async {
-+  if (_loadStarted) return;
-+  _loadStarted = true;
++/// 预热：发起 shader 加载（幂等**且共享同一个 Future**）。
++///
++/// 不能写成"第二次调用直接 return"：底栏与悬浮播放条各自持有一个
++/// [LiquidGlassLens]，第二个实例若在第一次 await 未完成时拿到一个已完成
++/// 的 Future，它的 `.then` 会在 `_program` 仍为 null 时触发、此后再无重建，
++/// 于是那块玻璃永久空白。共享同一个 Future 才能保证两个实例都在加载完成后
++/// 各收到一次通知。
++Future<void> ensureLiquidGlassShader() => _loadFuture ??= _load();
++
++Future<void> _load() async {
 +  try {
 +    _program = await ui.FragmentProgram.fromAsset(kLiquidGlassShaderAsset);
 +  } catch (_) {
-+    _program = null;
++    _program = null; // 加载失败按永久退化处理
 +  }
 +}
 +
