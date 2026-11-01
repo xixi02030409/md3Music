@@ -5078,10 +5078,10 @@ index 0000000..e31b4a6
 +    0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
 diff --git a/lib/widgets/halcyon/glass_pill.dart b/lib/widgets/halcyon/glass_pill.dart
 new file mode 100644
-index 0000000..f8a0c46
+index 0000000..8d9f7b3
 --- /dev/null
 +++ b/lib/widgets/halcyon/glass_pill.dart
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,152 @@
 +// Halcyon GlassPill.kt 的 Flutter 等价物 —— **一个组件承担全部玻璃层**。
 +//
 +// 源：ui-port/halcyon/.../ui/components/GlassPill.kt
@@ -5101,6 +5101,7 @@ index 0000000..f8a0c46
 +import 'package:flutter/material.dart';
 +
 +import 'glass_effect.dart';
++import 'highlight.dart';
 +import 'lens.dart';
 +
 +class HalcyonGlassPill extends StatelessWidget {
@@ -5211,24 +5212,15 @@ index 0000000..f8a0c46
 +                Positioned.fill(
 +                  child: IgnorePointer(child: ColoredBox(color: surface)),
 +                ),
-+                // 3) highlight：miuix 的 Highlight.Default 无源码，用 45° 双光带
-+                //    近似（观感档位按 highlight alpha 走，不另设参数）。
++                // 3) highlight —— GlassPill.kt:62-66 原样：
++                //      Highlight.Default.copy(alpha = bottomBarGlassHighlightAlpha(...))
++                //    Default 就是 miuix 的 BloomStroke（半球法线 rim + 双方向光），
++                //    由 shaders/miuix_bloom_stroke.frag 逐像素算出来，不是渐变。
 +                Positioned.fill(
 +                  child: IgnorePointer(
-+                    child: DecoratedBox(
-+                      decoration: BoxDecoration(
-+                        borderRadius: BorderRadius.circular(radius),
-+                        gradient: LinearGradient(
-+                          begin: Alignment.topLeft,
-+                          end: Alignment.bottomRight,
-+                          colors: <Color>[
-+                            Colors.white.withValues(alpha: highlight),
-+                            Colors.white.withValues(alpha: 0.0),
-+                            Colors.white.withValues(alpha: highlight * 0.5),
-+                          ],
-+                          stops: const <double>[0.0, 0.55, 1.0],
-+                        ),
-+                      ),
++                    child: HalcyonHighlight(
++                      highlight: Highlight(alpha: highlight),
++                      cornerRadius: radius,
 +                    ),
 +                  ),
 +                ),
@@ -5241,6 +5233,337 @@ index 0000000..f8a0c46
 +      ),
 +    );
 +  }
++}
+diff --git a/lib/widgets/halcyon/highlight.dart b/lib/widgets/halcyon/highlight.dart
+new file mode 100644
+index 0000000..d51d7f0
+--- /dev/null
++++ b/lib/widgets/halcyon/highlight.dart
+@@ -0,0 +1,325 @@
++// miuix Highlight 的 Flutter 等价物 —— 结构与预设逐条照搬。
++//
++// 源：compose-miuix-ui/miuix · miuix-blur/src/commonMain/kotlin/top/yukonga/miuix/kmp/blur/
++//     highlight/Highlight.kt、HighlightStyle.kt、HighlightDrawing.kt
++//     （Apache-2.0；本地副本 ui-port/miuix-blur/highlight/*.kt）
++//
++// Halcyon 的 GlassPill 用 `highlight = { Highlight.Default.copy(alpha = ...) }`
++// 给玻璃描一圈发光边。Default 就是 BloomStroke.GlassStrokeMiddleLight：
++//   color = White@0.05、blendMode = Plus、innerBlurRadius = 2.8dp
++//   主光 (0.5, 0.5, -0.5) intensity 0.4 ／ 副光 (0.5, 0.8, -0.5) intensity 0.25
++// 之前我用 45° 渐变顶替 —— 那是另一回事，观感当然不一样。
++import 'dart:math' as math;
++import 'dart:ui' as ui;
++
++import 'package:flutter/material.dart';
++
++const String kBloomStrokeShaderAsset = 'shaders/miuix_bloom_stroke.frag';
++
++/// 参考原点：把 [LightPosition] 换算成 3D 方向时的基准（HighlightStyle.kt:29-30）。
++const double _lightRefX = 0.5;
++const double _lightRefY = 0.7;
++
++ui.FragmentProgram? _program;
++Future<void>? _loadFuture;
++
++Future<void> ensureBloomStrokeShader() => _loadFuture ??= _load();
++
++Future<void> _load() async {
++  try {
++    _program = await ui.FragmentProgram.fromAsset(kBloomStrokeShaderAsset);
++  } catch (_) {
++    _program = null;
++  }
++}
++
++@immutable
++class LightPosition {
++  const LightPosition(this.x, this.y, this.z);
++  final double x, y, z;
++}
++
++@immutable
++class LightSource {
++  const LightSource({
++    required this.position,
++    this.color = const Color(0xFFFFFFFF),
++    this.intensity = 1.0,
++  });
++  final LightPosition position;
++  final Color color;
++  final double intensity;
++}
++
++/// BloomStroke：圆角矩形 SDF + 半球法线 rim，由若干方向光塑形。
++@immutable
++class BloomStroke {
++  const BloomStroke({
++    this.color = const Color(0x0DFFFFFF), // White@0.05
++    this.blendMode = BlendMode.plus,
++    this.innerBlurRadius = 2.8,
++    this.primaryLight = const LightSource(
++      position: LightPosition(0.5, 0.5, -0.5),
++      intensity: 0.4,
++    ),
++    this.secondaryLight = const LightSource(
++      position: LightPosition(0.5, 0.8, -0.5),
++      intensity: 0.25,
++    ),
++    this.dualPeak = false,
++  });
++
++  final Color color;
++  final BlendMode blendMode;
++  final double innerBlurRadius;
++  final LightSource primaryLight;
++  final LightSource secondaryLight;
++  final bool dualPeak;
++
++  // —— 预设（HighlightStyle.kt:161-252）——
++  static const BloomStroke glassStrokeBigLight = BloomStroke(
++    color: Color(0x0DFFFFFF),
++    innerBlurRadius: 3.5,
++    primaryLight: LightSource(
++      position: LightPosition(0.5, 0.5, -0.5),
++      intensity: 0.3,
++    ),
++    secondaryLight: LightSource(
++      position: LightPosition(0.5, 0.6, -0.5),
++      intensity: 0.2,
++    ),
++  );
++
++  static const BloomStroke glassStrokeMiddleLight = BloomStroke();
++
++  static const BloomStroke glassStrokeSmallLight = BloomStroke(
++    color: Color(0x0DFFFFFF),
++    innerBlurRadius: 2.6,
++    primaryLight: LightSource(
++      position: LightPosition(0.5, 0.5, -0.5),
++      intensity: 0.6,
++    ),
++    secondaryLight: LightSource(
++      position: LightPosition(0.5, 0.95, -0.5),
++      intensity: 0.35,
++    ),
++  );
++
++  static const BloomStroke glassStrokeBigDark = BloomStroke(
++    color: Color(0x0DFFFFFF),
++    innerBlurRadius: 1.7,
++    primaryLight: LightSource(
++      position: LightPosition(0.5, 0.5, -0.5),
++      intensity: 0.4,
++    ),
++    secondaryLight: LightSource(
++      position: LightPosition(0.5, 0.6, -0.5),
++      intensity: 0.25,
++    ),
++  );
++
++  static const BloomStroke glassStrokeMiddleDark = BloomStroke(
++    color: Color(0x0FFFFFFF), // White@0.06
++    innerBlurRadius: 2.0,
++    primaryLight: LightSource(
++      position: LightPosition(0.5, 0.5, -0.5),
++      intensity: 0.5,
++    ),
++    secondaryLight: LightSource(
++      position: LightPosition(0.5, 0.8, -0.5),
++      intensity: 0.25,
++    ),
++  );
++
++  static const BloomStroke glassStrokeSmallDark = BloomStroke(
++    color: Color(0x14FFFFFF), // White@0.08
++    innerBlurRadius: 2.3,
++    primaryLight: LightSource(
++      position: LightPosition(0.5, 0.5, -0.5),
++      intensity: 0.6,
++    ),
++    secondaryLight: LightSource(
++      position: LightPosition(0.5, 0.95, -0.36),
++      intensity: 0.25,
++    ),
++  );
++}
++
++/// Highlight 配置（Highlight.kt）：描边宽度 + 整体 alpha + 着色模型。
++@immutable
++class Highlight {
++  const Highlight({
++    this.width = 0.8,
++    this.alpha = 1.0,
++    this.style = const BloomStroke(),
++  });
++
++  final double width;
++  final double alpha;
++  final BloomStroke style;
++
++  /// Highlight.Default 别名（= GlassStrokeMiddleLight）。
++  static const Highlight defaultHighlight = Highlight();
++
++  Highlight copyWith({double? width, double? alpha, BloomStroke? style}) =>
++      Highlight(
++        width: width ?? this.width,
++        alpha: alpha ?? this.alpha,
++        style: style ?? this.style,
++      );
++}
++
++/// 画出高光层（HighlightDrawing.kt 的 drawHighlight）。
++///
++/// 铺满父级给定区域，用 shader 逐像素计算：圆角矩形 SDF + 半球法线 rim +
++/// 两盏方向光。混合模式取自 style（Default = Plus）。
++class HalcyonHighlight extends StatefulWidget {
++  const HalcyonHighlight({
++    super.key,
++    required this.highlight,
++    required this.cornerRadius,
++  });
++
++  final Highlight highlight;
++  final double cornerRadius;
++
++  @override
++  State<HalcyonHighlight> createState() => _HalcyonHighlightState();
++}
++
++class _HalcyonHighlightState extends State<HalcyonHighlight> {
++  ui.FragmentShader? _shader;
++
++  @override
++  void initState() {
++    super.initState();
++    ensureBloomStrokeShader().then((_) {
++      if (mounted) setState(() {});
++    });
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    final ui.FragmentProgram? program = _program;
++    // HighlightDrawing.kt:26-28 的守卫
++    if (program == null ||
++        widget.highlight.width <= 0 ||
++        widget.highlight.alpha <= 0) {
++      return const SizedBox.expand();
++    }
++    _shader ??= program.fragmentShader();
++    return CustomPaint(
++      painter: _BloomStrokePainter(
++        shader: _shader!,
++        highlight: widget.highlight,
++        cornerRadius: widget.cornerRadius,
++        dpr: MediaQuery.devicePixelRatioOf(context),
++      ),
++      child: const SizedBox.expand(),
++    );
++  }
++}
++
++class _BloomStrokePainter extends CustomPainter {
++  _BloomStrokePainter({
++    required this.shader,
++    required this.highlight,
++    required this.cornerRadius,
++    required this.dpr,
++  });
++
++  final ui.FragmentShader shader;
++  final Highlight highlight;
++  final double cornerRadius;
++  final double dpr;
++
++  @override
++  void paint(Canvas canvas, Size size) {
++    if (size.width <= 0 || size.height <= 0) return;
++    final style = highlight.style;
++    final double w = size.width * dpr;
++    final double h = size.height * dpr;
++    final double halfW = w * 0.5;
++    final double halfH = h * 0.5;
++    // HighlightDrawing.kt:33：描边宽度不超过短边一半
++    final double strokePx = (highlight.width * dpr).clamp(
++      0.0,
++      size.shortestSide * dpr / 2,
++    );
++    final double r = (cornerRadius * dpr).clamp(0.0, size.shortestSide * dpr / 2);
++
++    // 槽 0-1 = u_size（引擎注入），从 2 开始。
++    shader.setFloat(2, halfW);
++    shader.setFloat(3, halfH);
++    shader.setFloat(4, halfW.floorToDouble());
++    shader.setFloat(5, halfH.floorToDouble());
++    // 四角同值（胶囊/正圆）：顺序 TL/TR/BL/BR，与 miuix setCornerRadiiUniform 一致
++    shader.setFloat(6, r);
++    shader.setFloat(7, r);
++    shader.setFloat(8, r);
++    shader.setFloat(9, r);
++    shader.setFloat(10, strokePx);
++    final double innerR = style.innerBlurRadius * dpr;
++    shader.setFloat(11, innerR);
++    shader.setFloat(12, innerR * innerR);
++    shader.setFloat(13, highlight.alpha);
++    final Color c = style.color;
++    shader.setFloat(14, c.r);
++    shader.setFloat(15, c.g);
++    shader.setFloat(16, c.b);
++    shader.setFloat(17, 1.0); // setColorUniform(strokeColor, color.copy(alpha=1f))
++    shader.setFloat(18, c.a); // strokeAlphaMul = color.alpha
++    _applyLight(shader, '1', style.primaryLight, 19, 22, 26, 35);
++    _applyLight(shader, '2', style.secondaryLight, 27, 30, 34, 37);
++
++    final paint = Paint()
++      ..shader = shader
++      ..blendMode = style.blendMode;
++    canvas.drawRect(Offset.zero & size, paint);
++  }
++
++  /// applyLightUniforms（HighlightStyle.kt:255-280）
++  void _applyLight(
++    ui.FragmentShader s,
++    String _,
++    LightSource light,
++    int dirBase,
++    int colorBase,
++    int intensitySlot,
++    int axisBase,
++  ) {
++    final double dx = light.position.x - _lightRefX;
++    final double dy = light.position.y - _lightRefY;
++    final double dz = light.position.z;
++    final double len = math.max(
++      math.sqrt(dx * dx + dy * dy + dz * dz),
++      1e-6,
++    );
++    final double nx = dx / len;
++    final double ny = dy / len;
++    s.setFloat(dirBase, nx);
++    s.setFloat(dirBase + 1, ny);
++    s.setFloat(dirBase + 2, dz / len);
++    final Color lc = light.color;
++    s.setFloat(colorBase, lc.r);
++    s.setFloat(colorBase + 1, lc.g);
++    s.setFloat(colorBase + 2, lc.b);
++    s.setFloat(colorBase + 3, 1.0);
++    s.setFloat(intensitySlot, light.color.a * light.intensity);
++    final double xyLen = math.sqrt(nx * nx + ny * ny);
++    if (xyLen > 1e-3) {
++      s.setFloat(axisBase, nx / xyLen);
++      s.setFloat(axisBase + 1, ny / xyLen);
++    } else {
++      // 光沿 Z 轴：回退到固定的上/下半轴（原版同款 fallback）
++      s.setFloat(axisBase, 0.0);
++      s.setFloat(axisBase + 1, axisBase == 35 ? -1.0 : 1.0);
++    }
++  }
++
++  @override
++  bool shouldRepaint(_BloomStrokePainter old) =>
++      old.highlight != highlight ||
++      old.cornerRadius != cornerRadius ||
++      old.dpr != dpr;
 +}
 diff --git a/lib/widgets/halcyon/lens.dart b/lib/widgets/halcyon/lens.dart
 new file mode 100644
@@ -6334,17 +6657,260 @@ index 0000000..f40381f
 +  }
 +}
 diff --git a/pubspec.yaml b/pubspec.yaml
-index e674cc7..ecd69c6 100644
+index e674cc7..17199e3 100644
 --- a/pubspec.yaml
 +++ b/pubspec.yaml
-@@ -120,4 +120,7 @@ flutter:
-     - assets/web/
-   shaders:
-     - shaders/depth_parallax.frag
+@@ -1,123 +1,127 @@
+-name: md3music
+-description: "MD3Music - Music player with Material Design 3"
+-publish_to: 'none'
+-version: 6.2.0+53
+-
+-environment:
+-  sdk: ^3.12.0
+-
+-dependencies:
+-  flutter:
+-    sdk: flutter
+-
+-  cupertino_icons: ^1.0.8
+-  # just_audio 0.10.6 本地 fork：注入可拦截 AudioSink 的 RenderersFactory（USB 独占输出）
+-  just_audio:
+-    path: third_party/just_audio
+-  audio_session: ^0.1.18
+-  http: ^1.2.1
+-  # TV 构建焦点遍历引擎（fluttercandies/dpad），仅 --dart-define=MD3_TV=true 时生效，正常构建树摇剔除
+-  dpad: ^3.0.0
+-  provider: ^6.1.2
+-  cached_network_image: ^3.3.1
+-  sensors_plus: ^7.1.0
+-  crypto: ^3.0.3
+-  flutter_cache_manager: ^3.4.1
+-  shared_preferences: ^2.5.0
+-  # 2.5.0 改用 JNI 后无法解码旧原生 Integer 偏好，覆盖安装会在首帧前白屏。
+-  # 固定兼容版本；公开导出不携带 lock，不能仅依赖 lock 阻止升级。
+-  shared_preferences_android: 2.4.28
+-  permission_handler: ^12.0.0
+-  record: ^6.1.1
+-  path_provider: ^2.1.0
+-  quick_actions: ^1.0.7
+-  sqflite: 2.3.3+1
+-  # 听歌统计本地库：Windows/Linux 桌面 FFI 实现（移动端仍走 sqflite 平台实现）
+-  sqflite_common_ffi: ^2.3.3
+-  intl: ^0.20.2
+-  dio: ^5.4.0
+-  dio_cookie_manager: ^3.1.1
+-  cookie_jar: ^4.0.8
+-  url_launcher: ^6.3.0
+-  package_info_plus: ^10.2.1
+-  ffi: ^2.1.0
+-  palette_generator: ^0.3.3+7
+-  dynamic_color: ^1.7.0
+-  material_color_utilities: ^0.13.0
+-  audio_metadata_reader: ^1.4.1
+-  video_player: ^2.9.2
+-  chewie: ^1.8.5
+-  # MV 弹幕渲染层：CustomPainter 直绘，纯 Dart（无原生代码，不影响 Android 打包链路）
+-  # MIT 许可，与本项目 AGPL-3.0 兼容
+-  canvas_danmaku: ^0.3.3
+-  # Windows 桌面实现（均只声明 windows 平台，Android 完全不编译/注册，零影响）
+-  # vendor 自 pub 0.2.3，仅加一行 mediaPlayer.CommandManager().IsEnabled(false)
+-  # （上游 master 已修但未发版）：关掉系统自动 SMTC 集成，否则播控中心会在
+-  # runner 手动发布的完整卡片之外再多出一张空白卡片。上游发版后可移除本 fork。
+-  just_audio_windows:
+-    path: third_party/just_audio_windows
+-  # 3D 封面 Windows 侧推理：纯 Dart ONNX Runtime 绑定（vendored 自 onnxruntime_plus
+-  # 1.5.0 的 lib/src，**不是 plugin**，不会给 Android 注入 onnxruntime so）。
+-  ort_dart:
+-    path: third_party/ort_dart
+-  # 3D 封面 Windows 侧的 PNG 编解码 + 双线性缩放（纯 Dart、MIT，唯一依赖 archive）。
+-  # 只在 kDepthDartFfi（DEPTH_BACKEND=dart_ffi）分支被引用，Android/TV 编译期树摇剔除。
+-  image: ^4.12.0
+-  video_player_win: ^3.2.2     # video_player 的 Windows 实现（Media Foundation）
+-  dlna_dart: ^0.1.0
+-  webview_flutter: ^4.10.0
+-  flutter_secure_storage: ^10.3.1
+-  # 原生 Toast 提示（替代 SnackBar 通知）；10.0.0 起 compileSdk 满足项目 36 要求
+-  fluttertoast: ^10.0.0
+-  # TTML 歌词解析：Apple Music 风格 XML（Timed Text Markup Language）
+-  xml: ^6.5.0
+-  m3e_core: ^1.1.4
+-  # Material 库已解耦为独立包；m3e_core 1.1.0+ 要求 Flutter >=3.47.0 且依赖
+-  # material_ui ^1.3.0。注意 material_ui 声明的 flutter ">=3.44.0" 不准确：
+-  # 1.3.0 用了 @awaitNotRequired，该符号只在 3.47+ 的 foundation.dart
+-  # 导出列表中提供，3.44.x 上会编译失败（Undefined name 'awaitNotRequired'）。
+-  material_ui: ^1.3.0
+-  # AM 播放器传输按钮：路径级矢量图标形变（play↔pause 连续 morph + prev/next 描边动画）
+-  # 纯 Dart、零外部依赖，仅需自带 24x24 描边 SVG
+-  iconic_morph: ^1.9.0
+-  # M3E 补充组件：M3UndoPill 撤销条 + openContainerTransform 容器变换转场
+-  # 纯 Dart（仅依赖 vector_math），MIT，Flutter 3.10+，不影响 Android 打包链路
+-  m3_expressive: ^1.0.0
+-  # 网络类型检测（WiFi / 移动网络）：音质按网络分别设置
+-  connectivity_plus: ^7.0.0
+-  # 图片选择（外部歌单截图导入）
+-  image_picker: ^1.1.2
+-  # Windows 原生文件/目录选择（背景图、字体与本地音乐目录）
+-  file_selector: ^1.1.0
+-  # 诊断日志导出：系统分享面板（Android ACTION_SEND / Windows 系统分享），自带 FileProvider
+-  share_plus: ^13.3.0
+-  # 诊断日志导出：纯 Dart zip 打包（无原生代码，跨平台）
+-  archive: ^4.0.7
+-
+-dependency_overrides:
+-  # 钉住 material_ui 1.7.0：1.8.0 新导出 RoundedPolygon/CornerRounding（src/shapes/），
+-  # 与 m3e_core 1.1.4 自带的同名符号冲突，同时使用会出现
+-  # "'RoundedPolygon' is imported from both ..." 编译错误。约束 ^1.3.0 本身允许
+-  # 1.7.0，这里只是禁止 pub 自动升到 1.8+；material_ui 修复合并后可移除。
+-  material_ui: 1.7.0
+-
+-dev_dependencies:
+-  flutter_test:
+-    sdk: flutter
+-  integration_test:
+-    sdk: flutter
+-  flutter_lints: ^6.0.0
+-  fake_async: ^1.3.1
+-  analyzer: ^10.2.0
+-  video_player_platform_interface: ^6.9.0
+-
+-flutter:
+-  uses-material-design: true
+-  assets:
+-    - assets/images/
+-    - assets/icons/
+-    - LICENSE
+-    - assets/web/
+-  shaders:
+-    - shaders/depth_parallax.frag
+-    - shaders/flowing_background.frag
++name: md3music
++description: "MD3Music - Music player with Material Design 3"
++publish_to: 'none'
++version: 6.2.0+53
++
++environment:
++  sdk: ^3.12.0
++
++dependencies:
++  flutter:
++    sdk: flutter
++
++  cupertino_icons: ^1.0.8
++  # just_audio 0.10.6 本地 fork：注入可拦截 AudioSink 的 RenderersFactory（USB 独占输出）
++  just_audio:
++    path: third_party/just_audio
++  audio_session: ^0.1.18
++  http: ^1.2.1
++  # TV 构建焦点遍历引擎（fluttercandies/dpad），仅 --dart-define=MD3_TV=true 时生效，正常构建树摇剔除
++  dpad: ^3.0.0
++  provider: ^6.1.2
++  cached_network_image: ^3.3.1
++  sensors_plus: ^7.1.0
++  crypto: ^3.0.3
++  flutter_cache_manager: ^3.4.1
++  shared_preferences: ^2.5.0
++  # 2.5.0 改用 JNI 后无法解码旧原生 Integer 偏好，覆盖安装会在首帧前白屏。
++  # 固定兼容版本；公开导出不携带 lock，不能仅依赖 lock 阻止升级。
++  shared_preferences_android: 2.4.28
++  permission_handler: ^12.0.0
++  record: ^6.1.1
++  path_provider: ^2.1.0
++  quick_actions: ^1.0.7
++  sqflite: 2.3.3+1
++  # 听歌统计本地库：Windows/Linux 桌面 FFI 实现（移动端仍走 sqflite 平台实现）
++  sqflite_common_ffi: ^2.3.3
++  intl: ^0.20.2
++  dio: ^5.4.0
++  dio_cookie_manager: ^3.1.1
++  cookie_jar: ^4.0.8
++  url_launcher: ^6.3.0
++  package_info_plus: ^10.2.1
++  ffi: ^2.1.0
++  palette_generator: ^0.3.3+7
++  dynamic_color: ^1.7.0
++  material_color_utilities: ^0.13.0
++  audio_metadata_reader: ^1.4.1
++  video_player: ^2.9.2
++  chewie: ^1.8.5
++  # MV 弹幕渲染层：CustomPainter 直绘，纯 Dart（无原生代码，不影响 Android 打包链路）
++  # MIT 许可，与本项目 AGPL-3.0 兼容
++  canvas_danmaku: ^0.3.3
++  # Windows 桌面实现（均只声明 windows 平台，Android 完全不编译/注册，零影响）
++  # vendor 自 pub 0.2.3，仅加一行 mediaPlayer.CommandManager().IsEnabled(false)
++  # （上游 master 已修但未发版）：关掉系统自动 SMTC 集成，否则播控中心会在
++  # runner 手动发布的完整卡片之外再多出一张空白卡片。上游发版后可移除本 fork。
++  just_audio_windows:
++    path: third_party/just_audio_windows
++  # 3D 封面 Windows 侧推理：纯 Dart ONNX Runtime 绑定（vendored 自 onnxruntime_plus
++  # 1.5.0 的 lib/src，**不是 plugin**，不会给 Android 注入 onnxruntime so）。
++  ort_dart:
++    path: third_party/ort_dart
++  # 3D 封面 Windows 侧的 PNG 编解码 + 双线性缩放（纯 Dart、MIT，唯一依赖 archive）。
++  # 只在 kDepthDartFfi（DEPTH_BACKEND=dart_ffi）分支被引用，Android/TV 编译期树摇剔除。
++  image: ^4.12.0
++  video_player_win: ^3.2.2     # video_player 的 Windows 实现（Media Foundation）
++  dlna_dart: ^0.1.0
++  webview_flutter: ^4.10.0
++  flutter_secure_storage: ^10.3.1
++  # 原生 Toast 提示（替代 SnackBar 通知）；10.0.0 起 compileSdk 满足项目 36 要求
++  fluttertoast: ^10.0.0
++  # TTML 歌词解析：Apple Music 风格 XML（Timed Text Markup Language）
++  xml: ^6.5.0
++  m3e_core: ^1.1.4
++  # Material 库已解耦为独立包；m3e_core 1.1.0+ 要求 Flutter >=3.47.0 且依赖
++  # material_ui ^1.3.0。注意 material_ui 声明的 flutter ">=3.44.0" 不准确：
++  # 1.3.0 用了 @awaitNotRequired，该符号只在 3.47+ 的 foundation.dart
++  # 导出列表中提供，3.44.x 上会编译失败（Undefined name 'awaitNotRequired'）。
++  material_ui: ^1.3.0
++  # AM 播放器传输按钮：路径级矢量图标形变（play↔pause 连续 morph + prev/next 描边动画）
++  # 纯 Dart、零外部依赖，仅需自带 24x24 描边 SVG
++  iconic_morph: ^1.9.0
++  # M3E 补充组件：M3UndoPill 撤销条 + openContainerTransform 容器变换转场
++  # 纯 Dart（仅依赖 vector_math），MIT，Flutter 3.10+，不影响 Android 打包链路
++  m3_expressive: ^1.0.0
++  # 网络类型检测（WiFi / 移动网络）：音质按网络分别设置
++  connectivity_plus: ^7.0.0
++  # 图片选择（外部歌单截图导入）
++  image_picker: ^1.1.2
++  # Windows 原生文件/目录选择（背景图、字体与本地音乐目录）
++  file_selector: ^1.1.0
++  # 诊断日志导出：系统分享面板（Android ACTION_SEND / Windows 系统分享），自带 FileProvider
++  share_plus: ^13.3.0
++  # 诊断日志导出：纯 Dart zip 打包（无原生代码，跨平台）
++  archive: ^4.0.7
++
++dependency_overrides:
++  # 钉住 material_ui 1.7.0：1.8.0 新导出 RoundedPolygon/CornerRounding（src/shapes/），
++  # 与 m3e_core 1.1.4 自带的同名符号冲突，同时使用会出现
++  # "'RoundedPolygon' is imported from both ..." 编译错误。约束 ^1.3.0 本身允许
++  # 1.7.0，这里只是禁止 pub 自动升到 1.8+；material_ui 修复合并后可移除。
++  material_ui: 1.7.0
++
++dev_dependencies:
++  flutter_test:
++    sdk: flutter
++  integration_test:
++    sdk: flutter
++  flutter_lints: ^6.0.0
++  fake_async: ^1.3.1
++  analyzer: ^10.2.0
++  video_player_platform_interface: ^6.9.0
++
++flutter:
++  uses-material-design: true
++  assets:
++    - assets/images/
++    - assets/icons/
++    - LICENSE
++    - assets/web/
++  shaders:
++    - shaders/depth_parallax.frag
 +    - shaders/liquid_glass.frag
 +    - shaders/halcyon_lens.frag
 +    - shaders/halcyon_lens_dispersion.frag
-     - shaders/flowing_background.frag
++    - shaders/miuix_bloom_stroke.frag
++    - shaders/flowing_background.frag
 diff --git a/shaders/halcyon_lens.frag b/shaders/halcyon_lens.frag
 new file mode 100644
 index 0000000..311275a
@@ -6761,4 +7327,120 @@ index 0000000..9efea10
 +  color.rgb += vec3(s1 + s2);
 +
 +  fragColor = vec4(color.rgb, 1.0);
++}
+diff --git a/shaders/miuix_bloom_stroke.frag b/shaders/miuix_bloom_stroke.frag
+new file mode 100644
+index 0000000..f52b4bb
+--- /dev/null
++++ b/shaders/miuix_bloom_stroke.frag
+@@ -0,0 +1,110 @@
++#version 460 core
++
++#include <flutter/runtime_effect.glsl>
++
++// ============================================================================
++// miuix-kmp 的 BloomStroke 高光 shader —— 逐字移植（dualPeak = false 分支）。
++//
++// 源：compose-miuix-ui/miuix · miuix-blur/src/commonMain/kotlin/top/yukonga/miuix/kmp/
++//     blur/internal/Shaders.kt 的 buildBloomStrokeShader(dualPeak = false)
++//     （Apache-2.0；本地副本 ui-port/miuix-blur/internal/Shaders.kt:440-531）
++//
++// 这正是 Halcyon GlassPill 里 `highlight = { Highlight.Default.copy(alpha=...) }`
++// 真正画的那一层：**半球法线 rim + 两盏方向光的平方衰减**，不是"45° 白渐变"。
++// 之前用渐变近似，观感自然对不上，这里按源码照搬。
++//
++// 机械替换：
++//   half4/half3/half  -> vec4/vec3/float
++//   去掉 `layout(color)`（Flutter 无此修饰，颜色按 sRGB 分量直接传）
++//   `$axisUniforms` / `$lightBlock` 展开为 dualPeak=false 的那一份
++// ============================================================================
++uniform vec2 u_size;              // 槽 0-1（引擎注入，勿写）
++
++uniform vec2 halfView;            // 2-3
++uniform vec2 halfViewFloor;       // 4-5
++uniform vec4 cornerRadii;         // 6-9
++uniform float strokeWidth;        // 10
++uniform float innerBlurRadius;    // 11
++uniform float innerBlurRadiusSq;  // 12
++uniform float highlightAlpha;     // 13
++uniform vec4 strokeColor;         // 14-17
++uniform float strokeAlphaMul;     // 18
++uniform vec3 lightDir1;           // 19-21
++uniform vec4 lightColor1;         // 22-25
++uniform float lightIntensity1;    // 26
++uniform vec3 lightDir2;           // 27-29
++uniform vec4 lightColor2;         // 30-33
++uniform float lightIntensity2;    // 34
++uniform vec2 axis1;               // 35-36
++uniform vec2 axis2;               // 37-38
++
++out vec4 fragColor;
++
++float pickRadius(vec2 fragCoord, vec4 radii) {
++  vec2 up = fragCoord.y < halfView.y ? radii.xy : radii.zw;
++  return fragCoord.x < halfView.x ? up.x : up.y;
++}
++
++// caller passes non-negative pos (already abs-folded), so skip the redundant abs.
++float roundedBoxSDF(vec2 pos, vec2 halfSize, float radius) {
++  radius = min(radius, min(halfSize.x, halfSize.y));
++  vec2 d = pos - halfSize + radius;
++  return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
++}
++
++vec3 getNormal(vec2 fragCoord, float sdf, float R) {
++  vec2 xy = fragCoord - halfViewFloor;
++  vec2 xy_a = abs(xy);
++  float t = smoothstep(-innerBlurRadius, 0.0, sdf);
++  float z = sqrt(max(innerBlurRadiusSq - t * t, 0.0));
++  vec3 coord = vec3(xy_a, -z);
++
++  vec2 corner = halfView - R;
++  corner.x = min(corner.x, xy_a.x);
++  corner.y = min(corner.y, xy_a.y);
++
++  vec2 dir = normalize(coord.xy - corner.xy);
++  corner += dir * (R - innerBlurRadius);
++
++  if (any(lessThan(xy_a, corner))) {
++    return vec3(0.0, 0.0, -1.0);
++  }
++
++  vec2 signal = sign(xy);
++  vec3 n = normalize(coord - vec3(corner, 0.0));
++  n.xy *= signal;
++  return n;
++}
++
++void main() {
++  vec2 fragCoord = FlutterFragCoord().xy;
++  vec2 xy = abs(fragCoord - halfView);
++
++  float originRadius = pickRadius(fragCoord, cornerRadii);
++  float R = max(originRadius, innerBlurRadius);
++
++  if (all(lessThan(xy, halfView - R))) {
++    fragColor = vec4(0.0);
++    return;
++  }
++
++  float sdf = roundedBoxSDF(xy, halfView, originRadius);
++  float outMask = smoothstep(0.0, -1.0, sdf);
++  float strokeAlpha = smoothstep(-strokeWidth, -strokeWidth + 1.0, sdf);
++
++  // Native: stroke = uStrokeColor * sa; result += stroke.rgb * stroke.a
++  //       = strokeColor.rgb * strokeColor.a * sa^2
++  vec3 rgb = strokeColor.rgb * (strokeAlphaMul * strokeAlpha * strokeAlpha);
++
++  vec3 n = getNormal(fragCoord, sdf, R);
++
++  float falloff1 = max(dot(vec3(axis1, 0.0), n), 0.0);
++  float light1 = clamp(dot(n, lightDir1) * falloff1, 0.0, 1.0);
++  rgb += (light1 * light1 * lightIntensity1) * lightColor1.rgb;
++
++  float falloff2 = max(dot(vec3(axis2, 0.0), n), 0.0);
++  float light2 = clamp(dot(n, lightDir2) * falloff2, 0.0, 1.0);
++  rgb += (light2 * light2 * lightIntensity2) * lightColor2.rgb;
++
++  fragColor = vec4(rgb * highlightAlpha, 1.0) * outMask;
 +}
