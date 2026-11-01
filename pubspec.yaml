@@ -120,4 +120,5 @@ flutter:
     - assets/web/
   shaders:
     - shaders/depth_parallax.frag
+    - shaders/liquid_glass.frag
     - shaders/flowing_background.frag
