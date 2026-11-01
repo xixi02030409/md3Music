@@ -3890,10 +3890,10 @@ index 0000000..0e8d405
 +    0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
 diff --git a/lib/widgets/halcyon/glass_pill.dart b/lib/widgets/halcyon/glass_pill.dart
 new file mode 100644
-index 0000000..f3e2793
+index 0000000..cb32d6e
 --- /dev/null
 +++ b/lib/widgets/halcyon/glass_pill.dart
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,148 @@
 +// 源：halcyon/.../components/GlassPill.kt
 +//
 +// 原版 modifier 链（顺序即绘制顺序）：
@@ -3997,7 +3997,12 @@ index 0000000..f3e2793
 +                !disableRefraction &&
 +                liquidConfig.refractionHeightDp > 0 &&
 +                liquidConfig.refractionAmountDp > 0;
-+            final double pad = useLens ? liquidConfig.refractionAmountDp : 0;
++            // 【不外扩】MiuiX 的 drawBackdrop 用 padding 扩大采样区，是为了让
++            // 边缘折射能取到形状外的真实背景。Flutter 这边实测：BackdropFilter
++            // 的盒子一旦超出形状，外扩区域**不会被 ClipRRect 裁住**，shader 会
++            // 直接吐到胶囊外面（越界采样 + 7 通道色散 = 一块彩虹噪点，真机/模拟器
++            // 都复现）。所以这里 pad 固定 0：采样全部落在形状内，宁可边缘折射弱一点。
++            const double pad = 0.0;
 +            return Stack(
 +              clipBehavior: Clip.none,
 +              children: <Widget>[
