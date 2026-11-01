@@ -21,6 +21,9 @@ FILES = [
     'lib/modules/user/listen_stats_page.dart',
     'lib/widgets/halcyon_glass.dart',
     'lib/widgets/halcyon_dock_bar.dart',
+    'lib/widgets/liquid_glass.dart',
+    'shaders/liquid_glass.frag',
+    'pubspec.yaml',
 ]
 
 def run(cmd, cwd, check=True):
