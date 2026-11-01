@@ -1391,10 +1391,10 @@ index b70edd2..03c9fb3 100644
        ),
 diff --git a/lib/widgets/halcyon_dock_bar.dart b/lib/widgets/halcyon_dock_bar.dart
 new file mode 100644
-index 0000000..035f50f
+index 0000000..e1e90bb
 --- /dev/null
 +++ b/lib/widgets/halcyon_dock_bar.dart
-@@ -0,0 +1,426 @@
+@@ -0,0 +1,470 @@
 +// Halcyon 液态玻璃悬浮底栏（Flutter 移植版）。
 +// 蓝本：Halcyon (Kotlin Compose) ui/components/FloatingBottomBar.kt +
 +// ui/animation/DampedDragAnimation.kt 的可见行为子集（行号见注释）：
@@ -1696,7 +1696,14 @@ index 0000000..035f50f
 +                            child: ColoredBox(color: panelColor),
 +                          ),
 +                        ),
-+                        // 3. pill 选中指示器（accent 0.15 + 顶部光泽渐变）。
++                        // 3. pill 选中指示器 —— **FloatingBottomBar.kt:510-560 原样**：
++                        //    它不是一块纯色，静止时只是 0.1 的黑/白面（亮=黑、暗=白），
++                        //    按住时整块**变成另一枚小透镜**：
++                        //      lens(refractionHeight = 10dp·p, refractionAmount = 14dp·p,
++                        //           depthEffect = true, chromaticAberration = 0.5)
++                        //    同时面板色淡出到 0、叠 0.03 黑，并挂 8dp 内阴影。
++                        //    旧实现只画 accent@0.15 纯色 —— 按下去毫无玻璃感，正是
++                        //    "只有一层贴纸"的观感来源。
 +                        Positioned(
 +                          left: pillLeft,
 +                          top: 4,
@@ -1706,14 +1713,51 @@ index 0000000..035f50f
 +                            scaleX: pillScaleX,
 +                            scaleY: pillScaleY,
 +                            alignment: Alignment.center,
-+                            child: Container(
-+                              decoration: BoxDecoration(
-+                                color: activeColor.withValues(
-+                                  alpha: kHalcyonDockPillAlpha,
-+                                ),
-+                                borderRadius: BorderRadius.circular(
-+                                  radius - 4,
-+                                ),
++                            child: ClipRRect(
++                              borderRadius: BorderRadius.circular(radius - 4),
++                              child: Stack(
++                                children: <Widget>[
++                                  // 3a. 按压才出现的折射镜片（press=0 → 折射高度 0，
++                                  //     shader 在带外直接早退，等价纯透传，不耗性能）。
++                                  Positioned.fill(
++                                    child: IgnorePointer(
++                                      child: LiquidGlassLens(
++                                        radius: radius - 4,
++                                        refractionHeight:
++                                            10.0 * press,
++                                        refractionAmount:
++                                            14.0 * press,
++                                        chromatic: 0.5,
++                                        depthEffect: true,
++                                        blur: 0,
++                                      ),
++                                    ),
++                                  ),
++                                  // 3b. 面板色：0.1 黑（亮）/ 0.1 白（暗），随按压淡出。
++                                  Positioned.fill(
++                                    child: IgnorePointer(
++                                      child: ColoredBox(
++                                        color: (isDark
++                                                ? Colors.white
++                                                : Colors.black)
++                                            .withValues(
++                                              alpha: 0.10 * (1 - press),
++                                            ),
++                                      ),
++                                    ),
++                                  ),
++                                  // 3c. 按压增稠：0.03 黑（onDrawSurface 第二句）。
++                                  if (press > 0)
++                                    Positioned.fill(
++                                      child: IgnorePointer(
++                                        child: ColoredBox(
++                                          color: Colors.black.withValues(
++                                            alpha: 0.03 * press,
++                                          ),
++                                        ),
++                                      ),
++                                    ),
++                                ],
 +                              ),
 +                            ),
 +                          ),
