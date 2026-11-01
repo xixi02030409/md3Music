@@ -3409,10 +3409,10 @@ index b70edd2..03c9fb3 100644
        ),
 diff --git a/lib/widgets/halcyon/floating_bottom_bar.dart b/lib/widgets/halcyon/floating_bottom_bar.dart
 new file mode 100644
-index 0000000..36d9cfb
+index 0000000..8810aec
 --- /dev/null
 +++ b/lib/widgets/halcyon/floating_bottom_bar.dart
-@@ -0,0 +1,401 @@
+@@ -0,0 +1,404 @@
 +// 源：halcyon/.../components/FloatingBottomBar.kt（594 行）
 +//     + animation/DampedDragAnimation.kt（222 行，弹簧参数 1:1）
 +//
@@ -3537,7 +3537,7 @@ index 0000000..36d9cfb
 +        ),
 +        c.value,
 +        target,
-+        c.velocity * 1000,
++        c.velocity,
 +        snapToEnd: true,
 +      ),
 +    );
@@ -3728,8 +3728,11 @@ index 0000000..36d9cfb
 +  /// FloatingBottomBar.kt:512-559
 +  Widget _buildPill(bool isDark, double press) {
 +    final double vel = _velocity.value / 10;
-+    double sx = _scaleX.value;
-+    double sy = _scaleY.value;
++    // press 归零时 scale 直接回 1：弹簧一旦过冲残留，pill 会被放大成
++    // pressedScale(78/56≈1.39) 而静止不回去，真机上就是"pill 比胶囊大一圈、
++    // 左端被裁成直角"的那块灰影。
++    double sx = press > 0.01 ? _scaleX.value : 1.0;
++    double sy = press > 0.01 ? _scaleY.value : 1.0;
 +    sx /= 1 - (vel * 0.75).clamp(-0.2, 0.2);
 +    sy *= 1 - (vel * 0.25).clamp(-0.2, 0.2);
 +
