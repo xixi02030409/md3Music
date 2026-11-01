@@ -3409,10 +3409,10 @@ index b70edd2..03c9fb3 100644
        ),
 diff --git a/lib/widgets/halcyon/floating_bottom_bar.dart b/lib/widgets/halcyon/floating_bottom_bar.dart
 new file mode 100644
-index 0000000..f7ee099
+index 0000000..36d9cfb
 --- /dev/null
 +++ b/lib/widgets/halcyon/floating_bottom_bar.dart
-@@ -0,0 +1,396 @@
+@@ -0,0 +1,401 @@
 +// 源：halcyon/.../components/FloatingBottomBar.kt（594 行）
 +//     + animation/DampedDragAnimation.kt（222 行，弹簧参数 1:1）
 +//
@@ -3747,7 +3747,12 @@ index 0000000..f7ee099
 +          refractionAmountDp: 14.0 * press,
 +          chromaticAberration: 0.5,
 +        ),
-+        highlightOverride: _iosIndicatorSpecular.copyWith(alpha: press),
++        // 注意：Halcyon 的 iosIndicatorSpecular 是 dualPeak=true，走的是
++        // BLOOM_STROKE_SHADER_DUAL（每个光在对角两侧各出一个峰）。当前 shader 只
++        // 实现了 single 分支，且 pill 是胶囊（radius == 半高）会踩到 miuix
++        // getNormal 的 corner.y = halfSize.y - R = 0 边界情况，真机上表现为
++        // pill 左端一块被切一半的灰块。过渡期先用默认档（MiddleLight）保底。
++        highlightOverride: Highlight(alpha: press),
 +        child: Stack(
 +          fit: StackFit.expand,
 +          children: <Widget>[
