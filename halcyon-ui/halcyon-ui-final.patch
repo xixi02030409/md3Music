@@ -8014,10 +8014,10 @@ index 0000000..5e16065
 +}
 diff --git a/lib/widgets/halcyon/lens.dart b/lib/widgets/halcyon/lens.dart
 new file mode 100644
-index 0000000..383f352
+index 0000000..a00edab
 --- /dev/null
 +++ b/lib/widgets/halcyon/lens.dart
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,173 @@
 +// 源：halcyon/.../components/liquid/Lens.kt
 +//     `BackdropEffectScope.lens(refractionHeight, refractionAmount, depthEffect, chromaticAberration)`
 +//
@@ -8031,6 +8031,7 @@ index 0000000..383f352
 +// 【槽 0-1 必须由 Dart 写】Flutter 不会给 shader filter 注入任何 uniform；
 +// 项目内唯一跑通的 depth_parallax.frag 也是手动 setFloat(0,w)/setFloat(1,h)。
 +// 这两个槽是纹理尺寸，留空 → uv = coord/0 → 采样全废（玻璃会变成纯色块）。
++import 'dart:math' as math;
 +import 'dart:ui' as ui;
 +
 +import 'package:flutter/material.dart';
@@ -8135,36 +8136,41 @@ index 0000000..383f352
 +
 +    return LayoutBuilder(
 +      builder: (BuildContext context, BoxConstraints c) {
++        // 【纹理尺寸必须等于实际布局盒子】
++        // 之前这里算的是 `shape + 2×padding`（Halcyon 的外扩语义），但调用方
++        // 给的盒子只有 shape 大小 —— shader 以为纹理更大，uv 被压小，采样整体
++        // 偏到形状上方：胶囊左端吸到了列表里的黄绿专辑封面，表现为一块土黄色
++        // 半透明块糊在 pill 外面。现在一律以**约束**为准，形状尺寸只用于 SDF。
++        final double boxW = (c.maxWidth.isFinite && c.maxWidth > 0)
++            ? c.maxWidth * dpr
++            : widget.shapeSize.width * dpr;
++        final double boxH = (c.maxHeight.isFinite && c.maxHeight > 0)
++            ? c.maxHeight * dpr
++            : widget.shapeSize.height * dpr;
 +        final double shapeW = widget.shapeSize.width * dpr;
 +        final double shapeH = widget.shapeSize.height * dpr;
-+        final double pad = widget.padding * dpr;
-+        final double boxW = shapeW + pad * 2;
-+        final double boxH = shapeH + pad * 2;
++        final double pad = math.max(0.0, (boxW - shapeW) / 2);
 +        final double r = widget.radius * dpr;
 +
-+        // 盒子的屏幕左上角（物理 px）：FlutterFragCoord 给的是屏幕坐标，
-+        // 必须减掉它才能换回盒子局部坐标。
-+        Offset origin = Offset.zero;
-+        final RenderObject? ro = context.findRenderObject();
-+        if (ro is RenderBox && ro.hasSize) {
-+          origin = ro.localToGlobal(Offset.zero);
-+        }
-+        shader.setFloat(0, boxW); // 纹理尺寸 —— 必须写
++        // 【槽位表】与 shader 的 uniform 声明顺序严格一一对应。
++        // 0-1 uTexSize：输入图像尺寸（= 盒子尺寸，物理 px）。留 0 会让
++        //     uv = coord/0 → 采样全废（玻璃退化成一块纯色），这是第 1 个致命 bug。
++        // 2-3 size / 4-5 offset / 6-9 cornerRadii / 10 refractionHeight /
++        // 11 refractionAmount（负值 = 向内）/ 12 depthEffect / 13 chroma（仅色散变体）
++        shader.setFloat(0, boxW);
 +        shader.setFloat(1, boxH);
-+        shader.setFloat(2, origin.dx * dpr); // uOrigin
-+        shader.setFloat(3, origin.dy * dpr);
-+        shader.setFloat(4, shapeW);
-+        shader.setFloat(5, shapeH);
-+        shader.setFloat(6, -pad);
-+        shader.setFloat(7, -pad);
++        shader.setFloat(2, shapeW);
++        shader.setFloat(3, shapeH);
++        shader.setFloat(4, -pad);
++        shader.setFloat(5, -pad);
++        shader.setFloat(6, r);
++        shader.setFloat(7, r);
 +        shader.setFloat(8, r);
 +        shader.setFloat(9, r);
-+        shader.setFloat(10, r);
-+        shader.setFloat(11, r);
-+        shader.setFloat(12, widget.refractionHeight * dpr);
-+        shader.setFloat(13, -widget.refractionAmount * dpr); // 负值 = 向内
-+        shader.setFloat(14, widget.depthEffect ? 1.0 : 0.0);
-+        if (wantDispersion) shader.setFloat(15, widget.chromaticAberration);
++        shader.setFloat(10, widget.refractionHeight * dpr);
++        shader.setFloat(11, -widget.refractionAmount * dpr); // 负值 = 向内
++        shader.setFloat(12, widget.depthEffect ? 1.0 : 0.0);
++        if (wantDispersion) shader.setFloat(13, widget.chromaticAberration);
 +
 +        // effects 数组按序执行：blur 先跑，lens 再采样**已模糊**的结果。
 +        // Flutter 用两层 BackdropFilter 表达：外层（先绘制）做 blur 并把它画进
@@ -8867,10 +8873,10 @@ index 0000000..e544783
 +}
 diff --git a/shaders/halcyon_lens.frag b/shaders/halcyon_lens.frag
 new file mode 100644
-index 0000000..e9b90d8
+index 0000000..975d132
 --- /dev/null
 +++ b/shaders/halcyon_lens.frag
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,91 @@
 +#version 460 core
 +#include <flutter/runtime_effect.glsl>
 +
@@ -8885,7 +8891,6 @@ index 0000000..e9b90d8
 +//  0-1 texSize  2-3 size  4-5 offset  6-9 cornerRadii
 +//  10 refractionHeight  11 refractionAmount  12 depthEffect
 +uniform vec2 uTexSize;
-+uniform vec2 uOrigin;   // 2-3 盒子的屏幕左上角（物理 px）
 +uniform vec2 size;
 +uniform vec2 offset;
 +uniform vec4 cornerRadii;
@@ -8897,8 +8902,8 @@ index 0000000..e9b90d8
 +
 +out vec4 fragColor;
 +
-+// coord 是**盒子局部坐标**（已减去 uOrigin）。BackdropFilter 的输入纹理就是
-+// 这块盒子的内容，所以 local / texSize 就是 uv。
++// coord 是**盒子局部坐标**（ImageFilter.shader 的 FlutterFragCoord 已经是
++// 相对输入图像的局部坐标）。输入图像就是这块盒子的内容，local / texSize 即 uv。
 +vec4 sampleContent(vec2 coord) {
 +  vec2 uv = coord / max(uTexSize, vec2(1.0));
 +  return texture(content, clamp(uv, vec2(0.0), vec2(1.0)));
@@ -8937,10 +8942,12 @@ index 0000000..e9b90d8
 +float circleMap(float x) { return 1.0 - sqrt(1.0 - x * x); }
 +
 +void main() {
-+  // FlutterFragCoord 在 ImageFilter.shader 里是**屏幕坐标**，不是局部坐标。
-+  // 之前直接拿它除盒子尺寸，uv 跑到 0..8 这种越界值，采样被 clamp 到屏幕边缘
-+  // —— 表现就是"页面顶部的内容被翻转着映进胶囊"。这里先减掉盒子原点。
-+  vec2 coord = FlutterFragCoord().xy - uOrigin;
++  // 【坐标语义·定案】ImageFilter.shader 里 FlutterFragCoord 给的是**输入图像
++  // 的局部坐标**（0..输入尺寸），不是屏幕坐标。
++  //   曾经误判成屏幕坐标，减去盒子屏幕原点 → 得到负数 → clamp 到 0 →
++  //   整块玻璃都采样到图像左上角那一行像素。这就是"底栏里映着页面最上面
++  //   那一行字"的真正来源（不是倒影，是把左上角一个像素铺满整块）。
++  vec2 coord = FlutterFragCoord().xy;
 +  vec2 halfSize = size * 0.5;
 +  vec2 centeredCoord = (coord + offset) - halfSize;
 +  float radius = radiusAt(centeredCoord, cornerRadii);
@@ -8963,10 +8970,10 @@ index 0000000..e9b90d8
 +}
 diff --git a/shaders/halcyon_lens_dispersion.frag b/shaders/halcyon_lens_dispersion.frag
 new file mode 100644
-index 0000000..83c44e8
+index 0000000..b0f72a7
 --- /dev/null
 +++ b/shaders/halcyon_lens_dispersion.frag
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,116 @@
 +#version 460 core
 +#include <flutter/runtime_effect.glsl>
 +
@@ -8975,7 +8982,6 @@ index 0000000..83c44e8
 +//
 +// 与无色散版的唯一差别就是末尾那 7 次采样；槽位与上面完全一致，另加 13 = chromaticAberration。
 +uniform vec2 uTexSize;
-+uniform vec2 uOrigin;   // 2-3 盒子的屏幕左上角（物理 px）
 +uniform vec2 size;
 +uniform vec2 offset;
 +uniform vec4 cornerRadii;
@@ -8988,8 +8994,8 @@ index 0000000..83c44e8
 +
 +out vec4 fragColor;
 +
-+// coord 是**盒子局部坐标**（已减去 uOrigin）。BackdropFilter 的输入纹理就是
-+// 这块盒子的内容，所以 local / texSize 就是 uv。
++// coord 是**盒子局部坐标**（ImageFilter.shader 的 FlutterFragCoord 已经是
++// 相对输入图像的局部坐标）。输入图像就是这块盒子的内容，local / texSize 即 uv。
 +vec4 sampleContent(vec2 coord) {
 +  vec2 uv = coord / max(uTexSize, vec2(1.0));
 +  return texture(content, clamp(uv, vec2(0.0), vec2(1.0)));
@@ -9027,10 +9033,12 @@ index 0000000..83c44e8
 +float circleMap(float x) { return 1.0 - sqrt(1.0 - x * x); }
 +
 +void main() {
-+  // FlutterFragCoord 在 ImageFilter.shader 里是**屏幕坐标**，不是局部坐标。
-+  // 之前直接拿它除盒子尺寸，uv 跑到 0..8 这种越界值，采样被 clamp 到屏幕边缘
-+  // —— 表现就是"页面顶部的内容被翻转着映进胶囊"。这里先减掉盒子原点。
-+  vec2 coord = FlutterFragCoord().xy - uOrigin;
++  // 【坐标语义·定案】ImageFilter.shader 里 FlutterFragCoord 给的是**输入图像
++  // 的局部坐标**（0..输入尺寸），不是屏幕坐标。
++  //   曾经误判成屏幕坐标，减去盒子屏幕原点 → 得到负数 → clamp 到 0 →
++  //   整块玻璃都采样到图像左上角那一行像素。这就是"底栏里映着页面最上面
++  //   那一行字"的真正来源（不是倒影，是把左上角一个像素铺满整块）。
++  vec2 coord = FlutterFragCoord().xy;
 +  vec2 halfSize = size * 0.5;
 +  vec2 centeredCoord = (coord + offset) - halfSize;
 +  float radius = radiusAt(centeredCoord, cornerRadii);
