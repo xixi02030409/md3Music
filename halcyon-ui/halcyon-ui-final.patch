@@ -4296,10 +4296,10 @@ index 0000000..5e16065
 +}
 diff --git a/lib/widgets/halcyon/lens.dart b/lib/widgets/halcyon/lens.dart
 new file mode 100644
-index 0000000..370f904
+index 0000000..67cfcf1
 --- /dev/null
 +++ b/lib/widgets/halcyon/lens.dart
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,147 @@
 +// 源：halcyon/.../components/liquid/Lens.kt
 +//     `BackdropEffectScope.lens(refractionHeight, refractionAmount, depthEffect, chromaticAberration)`
 +//
@@ -4415,20 +4415,29 @@ index 0000000..370f904
 +        final double boxH = shapeH + pad * 2;
 +        final double r = widget.radius * dpr;
 +
++        // 盒子的屏幕左上角（物理 px）：FlutterFragCoord 给的是屏幕坐标，
++        // 必须减掉它才能换回盒子局部坐标。
++        Offset origin = Offset.zero;
++        final RenderObject? ro = context.findRenderObject();
++        if (ro is RenderBox && ro.hasSize) {
++          origin = ro.localToGlobal(Offset.zero);
++        }
 +        shader.setFloat(0, boxW); // 纹理尺寸 —— 必须写
 +        shader.setFloat(1, boxH);
-+        shader.setFloat(2, shapeW);
-+        shader.setFloat(3, shapeH);
-+        shader.setFloat(4, -pad);
-+        shader.setFloat(5, -pad);
-+        shader.setFloat(6, r);
-+        shader.setFloat(7, r);
++        shader.setFloat(2, origin.dx * dpr); // uOrigin
++        shader.setFloat(3, origin.dy * dpr);
++        shader.setFloat(4, shapeW);
++        shader.setFloat(5, shapeH);
++        shader.setFloat(6, -pad);
++        shader.setFloat(7, -pad);
 +        shader.setFloat(8, r);
 +        shader.setFloat(9, r);
-+        shader.setFloat(10, widget.refractionHeight * dpr);
-+        shader.setFloat(11, -widget.refractionAmount * dpr); // 负值 = 向内
-+        shader.setFloat(12, widget.depthEffect ? 1.0 : 0.0);
-+        if (wantDispersion) shader.setFloat(13, widget.chromaticAberration);
++        shader.setFloat(10, r);
++        shader.setFloat(11, r);
++        shader.setFloat(12, widget.refractionHeight * dpr);
++        shader.setFloat(13, -widget.refractionAmount * dpr); // 负值 = 向内
++        shader.setFloat(14, widget.depthEffect ? 1.0 : 0.0);
++        if (wantDispersion) shader.setFloat(15, widget.chromaticAberration);
 +
 +        return BackdropFilter(
 +          filter: ui.ImageFilter.shader(shader),
@@ -5120,10 +5129,10 @@ index 0000000..e544783
 +}
 diff --git a/shaders/halcyon_lens.frag b/shaders/halcyon_lens.frag
 new file mode 100644
-index 0000000..b989eae
+index 0000000..e9b90d8
 --- /dev/null
 +++ b/shaders/halcyon_lens.frag
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,90 @@
 +#version 460 core
 +#include <flutter/runtime_effect.glsl>
 +
@@ -5138,6 +5147,7 @@ index 0000000..b989eae
 +//  0-1 texSize  2-3 size  4-5 offset  6-9 cornerRadii
 +//  10 refractionHeight  11 refractionAmount  12 depthEffect
 +uniform vec2 uTexSize;
++uniform vec2 uOrigin;   // 2-3 盒子的屏幕左上角（物理 px）
 +uniform vec2 size;
 +uniform vec2 offset;
 +uniform vec4 cornerRadii;
@@ -5149,11 +5159,10 @@ index 0000000..b989eae
 +
 +out vec4 fragColor;
 +
++// coord 是**盒子局部坐标**（已减去 uOrigin）。BackdropFilter 的输入纹理就是
++// 这块盒子的内容，所以 local / texSize 就是 uv。
 +vec4 sampleContent(vec2 coord) {
 +  vec2 uv = coord / max(uTexSize, vec2(1.0));
-+#ifdef IMPELLER_TARGET_OPENGLES
-+  uv.y = 1.0 - uv.y;
-+#endif
 +  return texture(content, clamp(uv, vec2(0.0), vec2(1.0)));
 +}
 +
@@ -5190,7 +5199,10 @@ index 0000000..b989eae
 +float circleMap(float x) { return 1.0 - sqrt(1.0 - x * x); }
 +
 +void main() {
-+  vec2 coord = FlutterFragCoord().xy;
++  // FlutterFragCoord 在 ImageFilter.shader 里是**屏幕坐标**，不是局部坐标。
++  // 之前直接拿它除盒子尺寸，uv 跑到 0..8 这种越界值，采样被 clamp 到屏幕边缘
++  // —— 表现就是"页面顶部的内容被翻转着映进胶囊"。这里先减掉盒子原点。
++  vec2 coord = FlutterFragCoord().xy - uOrigin;
 +  vec2 halfSize = size * 0.5;
 +  vec2 centeredCoord = (coord + offset) - halfSize;
 +  float radius = radiusAt(centeredCoord, cornerRadii);
@@ -5213,10 +5225,10 @@ index 0000000..b989eae
 +}
 diff --git a/shaders/halcyon_lens_dispersion.frag b/shaders/halcyon_lens_dispersion.frag
 new file mode 100644
-index 0000000..8579f5f
+index 0000000..83c44e8
 --- /dev/null
 +++ b/shaders/halcyon_lens_dispersion.frag
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,115 @@
 +#version 460 core
 +#include <flutter/runtime_effect.glsl>
 +
@@ -5225,6 +5237,7 @@ index 0000000..8579f5f
 +//
 +// 与无色散版的唯一差别就是末尾那 7 次采样；槽位与上面完全一致，另加 13 = chromaticAberration。
 +uniform vec2 uTexSize;
++uniform vec2 uOrigin;   // 2-3 盒子的屏幕左上角（物理 px）
 +uniform vec2 size;
 +uniform vec2 offset;
 +uniform vec4 cornerRadii;
@@ -5237,11 +5250,10 @@ index 0000000..8579f5f
 +
 +out vec4 fragColor;
 +
++// coord 是**盒子局部坐标**（已减去 uOrigin）。BackdropFilter 的输入纹理就是
++// 这块盒子的内容，所以 local / texSize 就是 uv。
 +vec4 sampleContent(vec2 coord) {
 +  vec2 uv = coord / max(uTexSize, vec2(1.0));
-+#ifdef IMPELLER_TARGET_OPENGLES
-+  uv.y = 1.0 - uv.y;
-+#endif
 +  return texture(content, clamp(uv, vec2(0.0), vec2(1.0)));
 +}
 +
@@ -5277,7 +5289,10 @@ index 0000000..8579f5f
 +float circleMap(float x) { return 1.0 - sqrt(1.0 - x * x); }
 +
 +void main() {
-+  vec2 coord = FlutterFragCoord().xy;
++  // FlutterFragCoord 在 ImageFilter.shader 里是**屏幕坐标**，不是局部坐标。
++  // 之前直接拿它除盒子尺寸，uv 跑到 0..8 这种越界值，采样被 clamp 到屏幕边缘
++  // —— 表现就是"页面顶部的内容被翻转着映进胶囊"。这里先减掉盒子原点。
++  vec2 coord = FlutterFragCoord().xy - uOrigin;
 +  vec2 halfSize = size * 0.5;
 +  vec2 centeredCoord = (coord + offset) - halfSize;
 +  float radius = radiusAt(centeredCoord, cornerRadii);
