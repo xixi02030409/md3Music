@@ -2762,10 +2762,10 @@ index ea75e95..131dd24 100644
                );
              },
 diff --git a/lib/modules/player/secondary_mini_player.dart b/lib/modules/player/secondary_mini_player.dart
-index c52a20c..0253421 100644
+index c52a20c..8b3dbe0 100644
 --- a/lib/modules/player/secondary_mini_player.dart
 +++ b/lib/modules/player/secondary_mini_player.dart
-@@ -1,2102 +1,2206 @@
+@@ -1,2102 +1,2221 @@
 -import 'dart:async';
 -import 'dart:math' as math;
 -import 'dart:ui' show PathMetric;
@@ -7012,19 +7012,34 @@ index c52a20c..0253421 100644
 +  void paint(Canvas canvas, Size size) {
 +    // 宽度不足一个描边直径时没有"环"可言（形变极短帧 / 异常约束）
 +    if (size.width < size.height) return;
++    // 【硬保护】把包边裁进胶囊形状里：进度环的尺寸一旦与可见胶囊不一致
++    // （形变中、或宿主尺寸与卡片不同），描边会整圈套在胶囊外面、看着像个
++    // 大圆角框，正是真机上反馈的问题。这里无论如何先裁到同一形状。
++    final double radius = (size.height - _kProgressStroke) / 2;
++    canvas.save();
++    canvas.clipRRect(
++      RRect.fromRectAndRadius(
++        Rect.fromLTWH(0, 0, size.width, size.height),
++        Radius.circular(math.max(radius, 0)),
++      ),
++    );
 +    _buildRim(size);
 +    final metric = _rimMetric;
 +    if (metric == null) return;
 +
 +    canvas.drawPath(_rimPath, _stroke(trackColor));
 +    final p = progress.value.clamp(0.0, 1.0);
-+    if (p <= 0) return;
++    if (p <= 0) {
++      canvas.restore();
++      return;
++    }
 +    final seg = metric.extractPath(0, metric.length * p);
 +    // 先铺一层柔光再压实线：深色胶囊 + 深色壁纸下，3dp 实线自己会糊进底色，
 +    // 光晕把它重新"提"出来（调参台里 0.4 档观感最接近原版的辉光；只用一层
 +    // blur 描边，不额外加元素，所以不会变成"描边卡片"）。
 +    canvas.drawPath(seg, _glow(activeColor));
 +    canvas.drawPath(seg, _stroke(activeColor));
++    canvas.restore();
 +  }
 +
 +  Paint _stroke(Color color) => Paint()
@@ -7321,10 +7336,10 @@ index 0000000..8a91ebf
 +}
 diff --git a/lib/widgets/halcyon/floating_bottom_bar.dart b/lib/widgets/halcyon/floating_bottom_bar.dart
 new file mode 100644
-index 0000000..0999a4a
+index 0000000..0f1fa49
 --- /dev/null
 +++ b/lib/widgets/halcyon/floating_bottom_bar.dart
-@@ -0,0 +1,387 @@
+@@ -0,0 +1,382 @@
 +// FloatingBottomBar.kt 的 Flutter 移植件（**新文件，不改 md3music 原有底栏**）。
 +//
 +// 源：ui-port/halcyon/app/src/main/java/com/ella/music/ui/components/FloatingBottomBar.kt
@@ -7547,21 +7562,13 @@ index 0000000..0999a4a
 +            cornerRadius: radius,
 +            isLight: widget.isLight,
 +            // containerColor：isBlurActive 时 surfaceContainer.copy(alpha = 0.4f)
++            // containerColor = if (isBlurActive) surfaceContainer.copy(alpha = 0.4f)
 +            surfaceColor: halcyonGlassContainerColor(
 +              isLight: widget.isLight,
 +              glassEffect: HalcyonGlassEffect.liquidGlass,
 +              lightLiquidAlpha: 0.34,
 +              darkLiquidAlpha: 0.38,
-+            ).withValues(
-+              alpha:
-+                  halcyonGlassContainerColor(
-+                    isLight: widget.isLight,
-+                    glassEffect: HalcyonGlassEffect.liquidGlass,
-+                    lightLiquidAlpha: 0.34,
-+                    darkLiquidAlpha: 0.38,
-+                  ).a *
-+                  1.0,
-+            ),
++            ).withValues(alpha: 0.4),
 +            liquidConfig: HalcyonLiquidGlassConfig(
 +              // 本体模糊是固定 4dp（FloatingBottomBar.kt:431-434），
 +              // config.blurRadiusDp 只给 pill 用
@@ -7686,7 +7693,10 @@ index 0000000..0999a4a
 +  @override
 +  Widget build(BuildContext context) {
 +    final Color color = selected ? activeColor : contentColor;
-+    return ClipOval(
++    // 注意：原版的 .clip(CircleShape) 是为了让**焦点描边**贴着圆形走，
++    // 内容本身不受影响。Flutter 里 ClipOval 会把整列（图标+文字）裁成椭圆，
++    // 真机上表现为 tab 上罩一个椭圆轮廓 —— 那正是 bug，故不搬这一层。
++    return SizedBox(
 +      child: IconTheme.merge(
 +        data: IconThemeData(color: color, size: 26),
 +        child: DefaultTextStyle.merge(
@@ -8285,10 +8295,10 @@ index 0000000..d51d7f0
 +}
 diff --git a/lib/widgets/halcyon/lens.dart b/lib/widgets/halcyon/lens.dart
 new file mode 100644
-index 0000000..ab2e13c
+index 0000000..d256ae1
 --- /dev/null
 +++ b/lib/widgets/halcyon/lens.dart
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,167 @@
 +// Halcyon Lens.kt 的 Flutter 等价物 —— **结构、签名、守卫位置逐条对齐**。
 +//
 +// 源：ui-port/halcyon/.../ui/components/liquid/Lens.kt
@@ -8391,8 +8401,20 @@ index 0000000..ab2e13c
 +    });
 +  }
 +
++  static bool _logged = false;
++
 +  @override
 +  Widget build(BuildContext context) {
++    // 一次性诊断：玻璃到底有没有跑起来（真机 logcat 过滤 halcyon-lens）
++    if (!_logged) {
++      _logged = true;
++      debugPrint(
++        '[halcyon-lens] shaderSupported=${ui.ImageFilter.isShaderFilterSupported} '
++        'program=${_lensProgram != null} '
++        'dispersionProgram=${_dispersionProgram != null} '
++        'shape=${widget.shapeSize} h=${widget.refractionHeight} a=${widget.refractionAmount}',
++      );
++    }
 +    // Lens.kt:29-30 的两条守卫，位置与原版一致（在拿到 shader 之前就返回）
 +    if (!ui.ImageFilter.isShaderFilterSupported) {
 +      return const SizedBox.expand();
