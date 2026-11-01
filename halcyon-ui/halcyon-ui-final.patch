@@ -2136,34 +2136,56 @@ index 0000000..80a113e
 +}
 diff --git a/lib/widgets/liquid_glass.dart b/lib/widgets/liquid_glass.dart
 new file mode 100644
-index 0000000..d83eea2
+index 0000000..f40381f
 --- /dev/null
 +++ b/lib/widgets/liquid_glass.dart
-@@ -0,0 +1,118 @@
-+// 液态玻璃折射镜片（Kyant0/AndroidLiquidGlass Lens 的 Flutter 移植件）。
+@@ -0,0 +1,167 @@
++// 液态玻璃折射镜片 —— **Halcyon 源码移植件**（不是近似实现）。
 +//
-+// Halcyon 蓝本（Kotlin Compose）的 alpha0 内容折射层 + GlassPill lens 用的是
-+// Compose layerBackdrop/RenderEffect 管线，Flutter 无对应 API；这里用
-+// dart:ui ImageFilter.shader（Impeller 专有，FragmentProgram 运行时编译）
-+// 实现同款边缘折射 + 色散 + 双光源高光。非 Impeller 后端（Skia/软件渲染）
-+// 或 shader 加载失败时自动退化为透明（露出下层实底 pill），绝不崩。
++// 蓝本：halcyon/app/src/main/java/com/ella/music/ui/components/liquid/Lens.kt
++//       （其自身 adapted from Kyant0/AndroidLiquidGlass，Apache-2.0）
++// Halcyon 在 Compose 里用 RuntimeShader（SkSL）+ drawBackdrop 实现；Flutter 没有
++// 对应 API，这里用 dart:ui ImageFilter.shader（Impeller 专有）承载同一套算法，
++// 公式/常量/通道权重全部对齐 Lens.kt，见 shaders/liquid_glass.frag。
 +//
-+// 用法：画在被折射内容的【上层】（Stack 最后），必须包 IgnorePointer。
-+// shader 源码：shaders/liquid_glass.frag（uniform 槽位契约见该文件头）。
++// 组合顺序也照原版 applyBottomBarGlassEffect 的 LiquidGlass 分支：
++//   先 blur(liquidBlurRadiusDp) 再 lens(refractionHeight, refractionAmount, chroma)
++// 用 ImageFilter.compose(outer: shader, inner: blur) 表达。
++//
++// 非 Impeller 后端（Skia/软件渲染）或 shader 加载失败时退化为空 —— 由调用方的
++// 下层实底兜底，绝不崩。
 +import 'dart:ui' as ui;
 +
 +import 'package:flutter/material.dart';
 +
 +const String kLiquidGlassShaderAsset = 'shaders/liquid_glass.frag';
 +
-+/// 默认参数（GlassPill lens 10×progress 口径换算 + 实机调校余量；dp 值由
-+/// widget 侧 ×dpr 换算成物理 px 再喂 shader）。thickness 收窄到 14dp：
-+/// 56dp 高的 pill 上 22dp 边带会盖住 40% 高度，折射带挤进内容区。
-+const double kLensThicknessDp = 14.0;
-+const double kLensRefract = 0.85;
-+const double kLensBlurDp = 1.5;
-+const double kLensChromaDp = 1.4;
++// ---- 默认参数：全部取自 Halcyon BottomBarLiquidGlassConfig 默认值 ----
++// (val blurRadiusDp = 6f, refractionHeightDp = 24f, refractionAmountDp = 24f,
++//  chromaticAberration = 0f)
++
++/// 折射带高度（dp）= refractionHeightDp。
++const double kLensRefractionHeightDp = 24.0;
++
++/// 折射位移量（dp）= refractionAmountDp。Dart 侧传正值，shader 内部按负值
++/// 使用（原版 setFloatUniform("refractionAmount", -scaledRefractionAmount)）。
++const double kLensRefractionAmountDp = 24.0;
++
++/// 液态档基础模糊（dp）= liquidBlurRadiusDp 的等价量。
++///
++/// 原版是 6dp —— 但**默认关闭**：Flutter 侧这一层要靠 `ImageFilter.compose`
++/// 把 blur 套在 shader 之前，多一条 filter 链就多一份后端兼容风险；而用户对
++/// "额外模糊"本来就反感。需要更"糯"的玻璃时把它调到 6 即可。
++const double kLensBlurDp = 0.0;
++
++/// 色散强度 0-1 = chromaticAberration。原版注释口径：
++/// 0.1 轻微 / 0.2 Apple-pill 那种 / 0.3+ 明显彩虹晕。原版默认 0（关）。
++const double kLensChromatic = 0.15;
++
++/// 边缘双光源高光强度（BloomStroke 近似，原版由 miuix Highlight 另出一层）。
 +const double kLensSpecular = 0.40;
++
++/// 高光环带宽度（dp）。
 +const double kLensEdgeDp = 3.0;
 +
 +ui.FragmentProgram? _program;
@@ -2174,8 +2196,7 @@ index 0000000..d83eea2
 +/// 不能写成"第二次调用直接 return"：底栏与悬浮播放条各自持有一个
 +/// [LiquidGlassLens]，第二个实例若在第一次 await 未完成时拿到一个已完成
 +/// 的 Future，它的 `.then` 会在 `_program` 仍为 null 时触发、此后再无重建，
-+/// 于是那块玻璃永久空白。共享同一个 Future 才能保证两个实例都在加载完成后
-+/// 各收到一次通知。
++/// 于是那块玻璃永久空白。共享同一个 Future 才能保证两个实例都收到通知。
 +Future<void> ensureLiquidGlassShader() => _loadFuture ??= _load();
 +
 +Future<void> _load() async {
@@ -2190,26 +2211,43 @@ index 0000000..d83eea2
 +bool get liquidGlassSupported =>
 +    ui.ImageFilter.isShaderFilterSupported && _program != null;
 +
-+/// 折射镜片：占据可用空间，把背后内容做边缘折射 + 色散 + 高光。
++/// 折射镜片：占据可用空间，把背后内容做边缘折射 + 7 通道色散 + 边缘高光。
 +class LiquidGlassLens extends StatefulWidget {
 +  const LiquidGlassLens({
 +    super.key,
 +    required this.radius,
-+    this.thickness = kLensThicknessDp,
-+    this.refract = kLensRefract,
++    this.refractionHeight = kLensRefractionHeightDp,
++    this.refractionAmount = kLensRefractionAmountDp,
 +    this.blur = kLensBlurDp,
-+    this.chroma = kLensChromaDp,
++    this.chromatic = kLensChromatic,
 +    this.specular = kLensSpecular,
 +    this.edge = kLensEdgeDp,
++    this.depthEffect = false,
 +  });
 +
++  /// 圆角半径（dp）。胶囊/正圆传高度一半。
 +  final double radius;
-+  final double thickness;
-+  final double refract;
++
++  /// 折射带高度（dp）。
++  final double refractionHeight;
++
++  /// 折射位移量（dp）。
++  final double refractionAmount;
++
++  /// 折射前的轻模糊 sigma（dp）；0 = 不糊。
 +  final double blur;
-+  final double chroma;
++
++  /// 色散强度 0-1。
++  final double chromatic;
++
++  /// 边缘高光强度。
 +  final double specular;
++
++  /// 高光环带宽度（dp）。
 +  final double edge;
++
++  /// 是否叠加向心的深度分量（原版 depthEffect）。
++  final bool depthEffect;
 +
 +  @override
 +  State<LiquidGlassLens> createState() => _LiquidGlassLensState();
@@ -2232,7 +2270,7 @@ index 0000000..d83eea2
 +  Widget build(BuildContext context) {
 +    final ui.FragmentProgram? program = _program;
 +    if (program == null || !ui.ImageFilter.isShaderFilterSupported) {
-+      // Skia/软件渲染/加载失败：退化路径（实底 pill 由调用方下层兜底）。
++      // Skia/软件渲染/加载失败：退化路径（实底由调用方下层兜底）。
 +      return const SizedBox.expand();
 +    }
 +    final ui.FragmentShader shader = _shader ??= program.fragmentShader();
@@ -2241,16 +2279,27 @@ index 0000000..d83eea2
 +      builder: (BuildContext context, BoxConstraints c) {
 +        // float 槽 0-1 是 u_size（引擎注入），从 2 开始（契约见 .frag 头注释）。
 +        shader.setFloat(2, widget.radius * dpr);
-+        shader.setFloat(3, widget.thickness * dpr);
-+        shader.setFloat(4, widget.refract);
-+        shader.setFloat(5, widget.blur * dpr);
-+        shader.setFloat(6, widget.chroma * dpr);
++        shader.setFloat(3, widget.refractionHeight * dpr);
++        // 原版 setFloatUniform("refractionAmount", -scaledRefractionAmount)：
++        // 负号 = 向内采样，写成正数会把背景"吸进来"，是彩虹漩涡那类事故的来源。
++        shader.setFloat(4, -widget.refractionAmount * dpr);
++        shader.setFloat(5, widget.depthEffect ? 1.0 : 0.0);
++        shader.setFloat(6, widget.chromatic);
 +        shader.setFloat(7, widget.specular);
 +        shader.setFloat(8, widget.edge * dpr);
++        ui.ImageFilter filter = ui.ImageFilter.shader(shader);
++        final double b = widget.blur * dpr;
++        if (b > 0) {
++          // 原版顺序：先 blur(liquidBlurRadius) 再 lens(...)
++          filter = ui.ImageFilter.compose(
++            outer: filter,
++            inner: ui.ImageFilter.blur(sigmaX: b, sigmaY: b),
++          );
++        }
 +        return ClipRRect(
 +          borderRadius: BorderRadius.circular(widget.radius),
 +          child: BackdropFilter(
-+            filter: ui.ImageFilter.shader(shader),
++            filter: filter,
 +            child: const SizedBox.expand(),
 +          ),
 +        );
@@ -2270,48 +2319,81 @@ index e674cc7..2482369 100644
      - shaders/flowing_background.frag
 diff --git a/shaders/liquid_glass.frag b/shaders/liquid_glass.frag
 new file mode 100644
-index 0000000..18e7f6f
+index 0000000..fc79316
 --- /dev/null
 +++ b/shaders/liquid_glass.frag
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,164 @@
 +#version 460 core
 +
 +#include <flutter/runtime_effect.glsl>
 +
-+// 液态玻璃折射镜片（Kyant0/AndroidLiquidGlass Lens 的 Flutter shader 移植）。
++// 液态玻璃折射镜片 —— **Halcyon 源码逐行移植**。
++//
++// 来源：halcyon/app/src/main/java/com/ella/music/ui/components/liquid/Lens.kt
++//       （其自身 adapted from Kyant0/AndroidLiquidGlass，Apache-2.0）
++//       Halcyon 用 Compose 的 RuntimeShader（SkSL）实现，本文件是同一套算法
++//       在 Flutter fragment shader 上的等价物：把 content.eval(coord) 换成
++//       texture(u_backdrop, uv)，其余公式、常量、通道权重逐行对齐，
++//       不做"自己发挥"的近似。
++//
++// 【与原版 SkSL 的对应关系】
++//   原版 uniform        -> 本文件 uniform（槽位见下）
++//   size                -> u_size（引擎注入，槽 0-1）
++//   cornerRadii         -> u_radius（胶囊/正圆四角同值，故压成一个 float）
++//   refractionHeight    -> u_refractionHeight
++//   refractionAmount    -> u_refractionAmount（Dart 侧传**负值**，向内采样）
++//   depthEffect         -> u_depthEffect（0/1）
++//   chromaticAberration -> u_chromatic
++//   offset              -> 恒 0（Flutter 的滤镜纹理边界 = 形状边界；
++//                          原版留 padding 是为了 SkSL 越界采样，这里 d 恒向内）
 +//
 +// 【管线契约（dart:ui ImageFilter.shader）】
-+//   - 第一个 float uniform 必须是 vec2：引擎注入输入纹理尺寸（占 float 槽
-+//     0-1，Dart 侧不得写）；
++//   - 第一个 float uniform 必须是 vec2：引擎注入输入纹理尺寸（槽 0-1，勿写）；
 +//   - 第一个 sampler2D 由引擎绑定为滤镜输入（BackdropFilter 的背景层）；
-+//   - GLES 后端 y 轴反向：所有采样坐标经 uv2tex() 翻转（偏移量随仿射自动
-+//     保持方向：1-(u+o) = (1-u)-o）；
-+//   - 本项目约定：sampler uniform 声明在所有 float uniform 之后
-+//     （见 shaders/depth_parallax.frag:45）。
-+//
-+// 【算法（与 Kyant0 Lens 同构）】
-+//   圆角盒 SDF d：d>0 形外原样透传；d<0 内部按「凸缘高度剖面」折射——
-+//   边带内 h = sqrt(1-(depth/thickness)^2)（外缘 1 → 带内缘 0），采样点
-+//   向内偏移 -n·h·strength，RGB 三通道偏移量错开 = 边缘色散；内部整体
-+//   3% 放大造透镜感；BloomStroke 双光源（左上主光 + 右下副光）沿法线在
-+//   环带上加白。
-+uniform vec2 u_size;        // float 槽 0-1（引擎注入，勿写）
-+uniform float u_radius;     // 2: 圆角半径（物理 px）
-+uniform float u_thickness;  // 3: 折射边带厚度（物理 px）
-+uniform float u_refract;    // 4: 折射强度 0-1
-+uniform float u_blur;       // 5: 内部模糊 sigma（物理 px）
-+uniform float u_chroma;     // 6: 色散强度（物理 px）
-+uniform float u_specular;   // 7: 高光强度 0-1
-+uniform float u_edge;       // 8: 高光环带宽度（物理 px）
++//   - GLES 后端 y 轴反向：所有采样经 uv2tex() 翻转；
++//   - 本项目约定：sampler 声明在所有 float uniform 之后（depth_parallax.frag:45）。
++uniform vec2 u_size;              // 槽 0-1（引擎注入，勿写）
++uniform float u_radius;           // 2: 圆角半径（物理 px，胶囊 = 高/2）
++uniform float u_refractionHeight; // 3: 折射带高度（物理 px，Halcyon 默认 24dp）
++uniform float u_refractionAmount; // 4: 折射位移（物理 px，**负值** = 向内）
++uniform float u_depthEffect;      // 5: 0/1，叠加向心的深度分量
++uniform float u_chromatic;        // 6: 色散强度 0-1（原版 7 通道采样）
++uniform float u_specular;         // 7: 边缘双光源高光强度 0-1
++uniform float u_edge;             // 8: 高光环带宽度（物理 px）
 +
-+// 约定：sampler 声明在所有 float uniform 之后
-+uniform sampler2D u_backdrop; // 槽 0：引擎绑定为滤镜输入
++uniform sampler2D u_backdrop;     // 槽 0：引擎绑定为滤镜输入
 +
 +out vec4 fragColor;
 +
-+float sdRoundBox(vec2 p, vec2 halfSize, float r) {
-+  vec2 q = abs(p) - halfSize + r;
-+  return length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
++// ---- 以下 4 个函数与 Lens.kt 的 ROUNDED_RECT_SDF 字符串逐行一致 ----
++
++// 像素中心可能正好落在内切矩形上（分数/奇数 dp 半径尤其常见），GLSL 的
++// normalize(0) 未定义，部分 GPU 会在镜片中央画出矩形接缝 —— 保持梯度有限。
++vec2 safeNormalize(vec2 value) {
++  return value / max(length(value), 0.0001);
++}
++
++float sdRoundedRect(vec2 coord, vec2 halfSize, float radius) {
++  vec2 cornerCoord = abs(coord) - (halfSize - vec2(radius));
++  float outside = length(max(cornerCoord, 0.0)) - radius;
++  float inside = min(max(cornerCoord.x, cornerCoord.y), 0.0);
++  return outside + inside;
++}
++
++vec2 gradSdRoundedRect(vec2 coord, vec2 halfSize, float radius) {
++  vec2 cornerCoord = abs(coord) - (halfSize - vec2(radius));
++  if (cornerCoord.x > 0.0 || cornerCoord.y > 0.0) {
++    return sign(coord) * safeNormalize(max(cornerCoord, 0.0));
++  } else {
++    // 直边段：梯度只会落在两个轴上，用 step 而不是比较分支，避免 diverging branch
++    float gradX = step(cornerCoord.y, cornerCoord.x);
++    return sign(coord) * vec2(gradX, 1.0 - gradX);
++  }
++}
++
++// 原版剖面：外缘 1 → 带内缘 0（**凸**形，与 sqrt(1-x^2) 互补，别写反）
++float circleMap(float x) {
++  return 1.0 - sqrt(1.0 - x * x);
 +}
 +
 +vec2 uv2tex(vec2 uv) {
@@ -2322,70 +2404,86 @@ index 0000000..18e7f6f
 +#endif
 +}
 +
-+void main() {
-+  vec2 fc = FlutterFragCoord().xy;
-+  vec2 uv = fc / u_size;
-+  vec2 halfSize = u_size * 0.5;
-+  vec2 p = fc - halfSize;
-+  float d = sdRoundBox(p, halfSize, u_radius);
++// content.eval(coord) 的等价物：coord 为滤镜纹理内的像素坐标
++vec4 evalContent(vec2 coord) {
++  vec2 uv = clamp(coord / u_size, vec2(0.0), vec2(1.0));
++  return texture(u_backdrop, uv2tex(uv));
++}
 +
-+  // 形外：原样透传（BackdropFilter 边界内未被镜片覆盖处不改变背景）
-+  if (d > 0.0) {
-+    fragColor = texture(u_backdrop, uv2tex(uv));
++void main() {
++  vec2 coord = FlutterFragCoord().xy;
++  vec2 halfSize = u_size * 0.5;
++  vec2 centeredCoord = coord - halfSize;
++  float radius = min(u_radius, min(halfSize.x, halfSize.y));
++
++  float sd = sdRoundedRect(centeredCoord, halfSize, radius);
++
++  // 带外：原样透传（与 content.eval(coord) 等价）
++  if (-sd >= u_refractionHeight) {
++    fragColor = evalContent(coord);
 +    return;
 +  }
++  sd = min(sd, 0.0);
 +
-+  // SDF 中心差分 = 外法线（max 防 0 向量 NaN）
-+  float e = 1.0;
-+  vec2 grad = vec2(
-+    sdRoundBox(p + vec2(e, 0.0), halfSize, u_radius) -
-+        sdRoundBox(p - vec2(e, 0.0), halfSize, u_radius),
-+    sdRoundBox(p + vec2(0.0, e), halfSize, u_radius) -
-+        sdRoundBox(p - vec2(0.0, e), halfSize, u_radius)
-+  );
-+  vec2 n = grad / max(length(grad), 1e-4);
++  // 折射位移量：外缘最大 → 带内缘 0（circleMap 的输入是归一化深度）
++  float d = circleMap(1.0 - (-sd) / u_refractionHeight) * u_refractionAmount;
 +
-+  float depth = -d;
-+  float band = 1.0 - clamp(depth / u_thickness, 0.0, 1.0); // 1 在外缘
-+  float h = sqrt(max(1.0 - (1.0 - band) * (1.0 - band), 0.0)); // 凸缘剖面
++  float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
++  vec2 grad = safeNormalize(
++      gradSdRoundedRect(centeredCoord, halfSize, gradRadius) +
++      u_depthEffect * safeNormalize(centeredCoord));
 +
-+  // 折射位移（uv 空间）：边带内向内拉采样，外缘最强；色散分通道错开。
-+  // 量纲红线（真机彩虹漩涡教训）：amt 峰值 = refract×0.5×thickness_px
-+  // （24dp 边带下 rim 位移 ≈16px，读感是"透镜弯"而不是"把别处内容吸进来"）；
-+  // 色散是【像素级】错位，直接 chroma_px/width，绝不能再乘 thickness/width。
-+  float scale = u_thickness / max(u_size.x, 1.0);
-+  float amt = u_refract * 0.5 * h * scale;
-+  float ca = u_chroma * h / max(u_size.x, 1.0);
-+  vec2 offR = -n * (amt + ca);
-+  vec2 offG = -n * amt;
-+  vec2 offB = -n * max(amt - ca, 0.0);
++  vec2 refractedCoord = coord + d * grad;
 +
-+  // 内部 3% 放大（透镜感）
-+  vec2 mag = (halfSize + p * 0.97) / u_size;
++  // 色散：偏移量在对角区域最强（原版 dispersionIntensity = ca * x*y/(hx*hy)）
++  float dispersionIntensity =
++      u_chromatic * ((centeredCoord.x * centeredCoord.y) / (halfSize.x * halfSize.y));
++  vec2 dispersedCoord = d * grad * dispersionIntensity;
 +
-+  // 9 tap 近似模糊（u_blur=0 退化为单点）；采样坐标 clamp 防边缘拖影
-+  vec2 px = vec2(1.0) / u_size;
-+  vec3 col = vec3(0.0);
-+  float wsum = 0.0;
-+  for (int i = -1; i <= 1; i++) {
-+    for (int j = -1; j <= 1; j++) {
-+      vec2 o = vec2(float(i), float(j)) * u_blur * px;
-+      float w = (i == 0 && j == 0) ? 2.0 : 1.0;
-+      col.r += texture(u_backdrop, uv2tex(clamp(mag + o + offR, vec2(0.002), vec2(0.998)))).r * w;
-+      col.g += texture(u_backdrop, uv2tex(clamp(mag + o + offG, vec2(0.002), vec2(0.998)))).g * w;
-+      col.b += texture(u_backdrop, uv2tex(clamp(mag + o + offB, vec2(0.002), vec2(0.998)))).b * w;
-+      wsum += w;
-+    }
-+  }
-+  col /= wsum;
++  // ---- 7 通道色散采样，权重与 Lens.kt 的 ROUNDED_RECT_REFRACTION_WITH_DISPERSION_SHADER 逐行一致 ----
++  vec4 color = vec4(0.0);
 +
-+  // BloomStroke 双光源高光：左上主光(-45°) + 右下副光，沿外法线在环带加白
-+  float rim = 1.0 - smoothstep(0.0, u_edge, depth);
++  vec4 red = evalContent(refractedCoord + dispersedCoord);
++  color.r += red.r / 3.5;
++  color.a += red.a / 7.0;
++
++  vec4 orange = evalContent(refractedCoord + dispersedCoord * (2.0 / 3.0));
++  color.r += orange.r / 3.5;
++  color.g += orange.g / 7.0;
++  color.a += orange.a / 7.0;
++
++  vec4 yellow = evalContent(refractedCoord + dispersedCoord * (1.0 / 3.0));
++  color.r += yellow.r / 3.5;
++  color.g += yellow.g / 3.5;
++  color.a += yellow.a / 7.0;
++
++  vec4 green = evalContent(refractedCoord);
++  color.g += green.g / 3.5;
++  color.a += green.a / 7.0;
++
++  vec4 cyan = evalContent(refractedCoord - dispersedCoord * (1.0 / 3.0));
++  color.g += cyan.g / 3.5;
++  color.b += cyan.b / 3.0;
++  color.a += cyan.a / 7.0;
++
++  vec4 blue = evalContent(refractedCoord - dispersedCoord * (2.0 / 3.0));
++  color.b += blue.b / 3.0;
++  color.a += blue.a / 7.0;
++
++  vec4 purple = evalContent(refractedCoord - dispersedCoord);
++  color.r += purple.r / 7.0;
++  color.b += purple.b / 3.0;
++  color.a += purple.a / 7.0;
++
++  // ---- BloomStroke 双光源高光（Halcyon 的 Highlight 由 miuix 另出一层，
++  //      这里沿用同一观感的近似：左上主光 3 次幂 + 右下副光 4 次幂 × rim）----
++  float depth = -sd;
++  float rim = 1.0 - smoothstep(0.0, max(u_edge, 0.001), depth);
 +  vec2 l1 = normalize(vec2(-0.6, -0.8));
 +  vec2 l2 = normalize(vec2(0.7, 0.7));
-+  float s1 = pow(max(dot(n, l1), 0.0), 3.0) * rim * u_specular;
-+  float s2 = pow(max(dot(n, l2), 0.0), 4.0) * rim * u_specular * 0.55;
-+  col += vec3(s1 + s2);
++  float s1 = pow(max(dot(grad, l1), 0.0), 3.0) * rim * u_specular;
++  float s2 = pow(max(dot(grad, l2), 0.0), 4.0) * rim * u_specular * 0.55;
++  color.rgb += vec3(s1 + s2);
 +
-+  fragColor = vec4(col, 1.0);
++  fragColor = vec4(color.rgb, 1.0);
 +}
