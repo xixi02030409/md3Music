@@ -1291,16 +1291,18 @@ index b70edd2..03c9fb3 100644
        ),
 diff --git a/lib/widgets/halcyon_dock_bar.dart b/lib/widgets/halcyon_dock_bar.dart
 new file mode 100644
-index 0000000..5ce9293
+index 0000000..e6342a5
 --- /dev/null
 +++ b/lib/widgets/halcyon_dock_bar.dart
-@@ -0,0 +1,401 @@
+@@ -0,0 +1,450 @@
 +// Halcyon 液态玻璃悬浮底栏（Flutter 移植版）。
 +// 蓝本：Halcyon (Kotlin Compose) ui/components/FloatingBottomBar.kt +
 +// ui/animation/DampedDragAnimation.kt 的可见行为子集（行号见注释）：
-+//   - 玻璃面板：BackdropFilter 模糊 + 半透明底 + 内缘高光（Compose 端的
-+//     lens 折射/陀螺仪光源 Flutter 无对应 shader 管线，用高光描边 + pill
-+//     顶部光泽渐变近似；玻璃色参数照抄 GlassPill.kt:38-45 LiquidGlass 档）。
++//   - 玻璃面板：BackdropFilter 重模糊 + 半透明底 + BloomStroke 双光源渐变
++//     高光（-45°，同上 161-179 白 0.12；Flutter 端用面板渐变近似）。
++//   - 液态镜片 pill：dart:ui ImageFilter.shader（Impeller）真折射移植
++//     （Kyant0/AndroidLiquidGlass Lens：边缘折射 + 色散 + 高光），见
++//     liquid_glass.dart；Skia/软件渲染自动退化实底 pill，不崩。
 +//   - pill 指示器：primary 15% 实底（FloatingBottomBar.kt:569 accent 0.15），
 +//     拖动跟手、松手 spring 回弹（同文件 328：dampingRatio 1 / stiffness 300）。
 +//   - 拖动滑切：手指横向拖动连续扫过 tab（DampedDragAnimation 语义），
@@ -1316,9 +1318,12 @@ index 0000000..5ce9293
 +import 'package:flutter/material.dart';
 +import 'package:flutter/physics.dart' show SpringDescription, SpringSimulation;
 +
-+/// 底栏玻璃配色（GlassPill.kt:38-45 LiquidGlass 档：亮 white@0.34 / 暗 #111114@0.38）。
-+const double kHalcyonDockLightAlpha = 0.34;
-+const double kHalcyonDockDarkAlpha = 0.38;
++import 'liquid_glass.dart';
++
++/// 底栏玻璃配色（GlassPill.kt:38-45，Blur 档 0.56/0.58 与 LiquidGlass 档
++/// 0.34/0.38 之间取重——重模糊下要保证暗壁纸上"暗玻璃"读感，实机调校档）。
++const double kHalcyonDockLightAlpha = 0.45;
++const double kHalcyonDockDarkAlpha = 0.52;
 +const Color kHalcyonDockDarkTint = Color(0xFF111114);
 +
 +/// pill 指示器底色 alpha（FloatingBottomBar.kt:569 accent 0.15）。
@@ -1569,9 +1574,9 @@ index 0000000..5ce9293
 +                child: ClipRRect(
 +                  borderRadius: BorderRadius.circular(radius),
 +                  child: BackdropFilter(
-+                    // LiquidGlass 档 blur 6dp（BottomBarLiquidGlassConfig 默认），
-+                    // Flutter sigma 口径 ×2 ≈ 12；壁纸预模糊基建下开销可接受。
-+                    filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
++                    // 重模糊（真液态玻璃读感的下限；Blur 档 4dp→Flutter sigma
++                    // 口径 ×3 ≈ 20，实机调校档）。
++                    filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
 +                    child: Container(
 +                      height: widget.height,
 +                      decoration: BoxDecoration(
@@ -1619,6 +1624,32 @@ index 0000000..5ce9293
 +                              ),
 +                            ),
 +                          ),
++                          // BloomStroke 双光源玻璃面高光（-45°：左上主光带 +
++                          // 右下副光带，同上 161-179 白 0.12；画在内容下层 =
++                          // 高光在玻璃面上，图标文字浮于其上）。
++                          Positioned.fill(
++                            child: IgnorePointer(
++                              child: DecoratedBox(
++                                decoration: BoxDecoration(
++                                  borderRadius: BorderRadius.circular(radius),
++                                  gradient: LinearGradient(
++                                    begin: Alignment.topLeft,
++                                    end: Alignment.bottomRight,
++                                    colors: <Color>[
++                                      Colors.white.withValues(
++                                        alpha: isDark ? 0.12 : 0.20,
++                                      ),
++                                      Colors.white.withValues(alpha: 0.0),
++                                      Colors.white.withValues(
++                                        alpha: isDark ? 0.06 : 0.10,
++                                      ),
++                                    ],
++                                    stops: const <double>[0.0, 0.55, 1.0],
++                                  ),
++                                ),
++                              ),
++                            ),
++                          ),
 +                          Row(
 +                            children: <Widget>[
 +                              for (int i = 0; i < widget.tabCount; i++)
@@ -1636,6 +1667,24 @@ index 0000000..5ce9293
 +                                  ),
 +                                ),
 +                            ],
++                          ),
++                          // 液态镜片 pill：画在内容【上层】，把底下图标/文字
++                          // 折射弯曲（真液态玻璃本体，Kyant0 Lens 同款）；
++                          // 拖动时跟 pill 一起平移+速度形变。IgnorePointer
++                          // 放行点击；Skia 端返回空盒 = 实底 pill 兜底不崩。
++                          Positioned(
++                            left: pillLeft,
++                            top: 4,
++                            bottom: 4,
++                            width: _tabWidth,
++                            child: IgnorePointer(
++                              child: Transform.scale(
++                                scaleX: pillScaleX,
++                                scaleY: pillScaleY,
++                                alignment: Alignment.center,
++                                child: LiquidGlassLens(radius: radius - 4),
++                              ),
++                            ),
 +                          ),
 +                        ],
 +                      ),
@@ -2012,4 +2061,250 @@ index 0000000..80a113e
 +    if (borderRadius == null) return result;
 +    return ClipRRect(borderRadius: borderRadius!, child: result);
 +  }
++}
+diff --git a/lib/widgets/liquid_glass.dart b/lib/widgets/liquid_glass.dart
+new file mode 100644
+index 0000000..4bf0d0d
+--- /dev/null
++++ b/lib/widgets/liquid_glass.dart
+@@ -0,0 +1,112 @@
++// 液态玻璃折射镜片（Kyant0/AndroidLiquidGlass Lens 的 Flutter 移植件）。
++//
++// Halcyon 蓝本（Kotlin Compose）的 alpha0 内容折射层 + GlassPill lens 用的是
++// Compose layerBackdrop/RenderEffect 管线，Flutter 无对应 API；这里用
++// dart:ui ImageFilter.shader（Impeller 专有，FragmentProgram 运行时编译）
++// 实现同款边缘折射 + 色散 + 双光源高光。非 Impeller 后端（Skia/软件渲染）
++// 或 shader 加载失败时自动退化为透明（露出下层实底 pill），绝不崩。
++//
++// 用法：画在被折射内容的【上层】（Stack 最后），必须包 IgnorePointer。
++// shader 源码：shaders/liquid_glass.frag（uniform 槽位契约见该文件头）。
++import 'dart:ui' as ui;
++
++import 'package:flutter/material.dart';
++
++const String kLiquidGlassShaderAsset = 'shaders/liquid_glass.frag';
++
++/// 默认参数（GlassPill lens 10×progress 口径换算 + 实机调校余量；dp 值由
++/// widget 侧 ×dpr 换算成物理 px 再喂 shader）。
++const double kLensThicknessDp = 22.0;
++const double kLensRefract = 0.85;
++const double kLensBlurDp = 1.5;
++const double kLensChromaDp = 1.4;
++const double kLensSpecular = 0.40;
++const double kLensEdgeDp = 3.0;
++
++ui.FragmentProgram? _program;
++bool _loadStarted = false;
++
++/// 预热：发起 shader 加载（幂等）。加载失败按永久退化处理（与
++/// FlowingBackground 的 shaderUnavailable 同口径）。
++Future<void> ensureLiquidGlassShader() async {
++  if (_loadStarted) return;
++  _loadStarted = true;
++  try {
++    _program = await ui.FragmentProgram.fromAsset(kLiquidGlassShaderAsset);
++  } catch (_) {
++    _program = null;
++  }
++}
++
++/// 当前是否走真折射镜片（Impeller + shader 加载成功）。
++bool get liquidGlassSupported =>
++    ui.ImageFilter.isShaderFilterSupported && _program != null;
++
++/// 折射镜片：占据可用空间，把背后内容做边缘折射 + 色散 + 高光。
++class LiquidGlassLens extends StatefulWidget {
++  const LiquidGlassLens({
++    super.key,
++    required this.radius,
++    this.thickness = kLensThicknessDp,
++    this.refract = kLensRefract,
++    this.blur = kLensBlurDp,
++    this.chroma = kLensChromaDp,
++    this.specular = kLensSpecular,
++    this.edge = kLensEdgeDp,
++  });
++
++  final double radius;
++  final double thickness;
++  final double refract;
++  final double blur;
++  final double chroma;
++  final double specular;
++  final double edge;
++
++  @override
++  State<LiquidGlassLens> createState() => _LiquidGlassLensState();
++}
++
++class _LiquidGlassLensState extends State<LiquidGlassLens> {
++  /// FragmentShader 实例只建一次（每帧 program.fragmentShader() + 滤镜对象
++  /// 重建是 depth_shader_cover 实证过的跟手卡顿主因）；float 每帧更新很便宜。
++  ui.FragmentShader? _shader;
++
++  @override
++  void initState() {
++    super.initState();
++    ensureLiquidGlassShader().then((_) {
++      if (mounted) setState(() {});
++    });
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    final ui.FragmentProgram? program = _program;
++    if (program == null || !ui.ImageFilter.isShaderFilterSupported) {
++      // Skia/软件渲染/加载失败：退化路径（实底 pill 由调用方下层兜底）。
++      return const SizedBox.expand();
++    }
++    final ui.FragmentShader shader = _shader ??= program.fragmentShader();
++    final double dpr = MediaQuery.devicePixelRatioOf(context);
++    return LayoutBuilder(
++      builder: (BuildContext context, BoxConstraints c) {
++        // float 槽 0-1 是 u_size（引擎注入），从 2 开始（契约见 .frag 头注释）。
++        shader.setFloat(2, widget.radius * dpr);
++        shader.setFloat(3, widget.thickness * dpr);
++        shader.setFloat(4, widget.refract);
++        shader.setFloat(5, widget.blur * dpr);
++        shader.setFloat(6, widget.chroma * dpr);
++        shader.setFloat(7, widget.specular);
++        shader.setFloat(8, widget.edge * dpr);
++        return ClipRRect(
++          borderRadius: BorderRadius.circular(widget.radius),
++          child: BackdropFilter(
++            filter: ui.ImageFilter.shader(shader),
++            child: const SizedBox.expand(),
++          ),
++        );
++      },
++    );
++  }
++}
+diff --git a/pubspec.yaml b/pubspec.yaml
+index e674cc7..2482369 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -120,4 +120,5 @@ flutter:
+     - assets/web/
+   shaders:
+     - shaders/depth_parallax.frag
++    - shaders/liquid_glass.frag
+     - shaders/flowing_background.frag
+diff --git a/shaders/liquid_glass.frag b/shaders/liquid_glass.frag
+new file mode 100644
+index 0000000..eb0d4f4
+--- /dev/null
++++ b/shaders/liquid_glass.frag
+@@ -0,0 +1,112 @@
++#version 460 core
++
++#include <flutter/runtime_effect.glsl>
++
++// 液态玻璃折射镜片（Kyant0/AndroidLiquidGlass Lens 的 Flutter shader 移植）。
++//
++// 【管线契约（dart:ui ImageFilter.shader）】
++//   - 第一个 float uniform 必须是 vec2：引擎注入输入纹理尺寸（占 float 槽
++//     0-1，Dart 侧不得写）；
++//   - 第一个 sampler2D 由引擎绑定为滤镜输入（BackdropFilter 的背景层）；
++//   - GLES 后端 y 轴反向：所有采样坐标经 uv2tex() 翻转（偏移量随仿射自动
++//     保持方向：1-(u+o) = (1-u)-o）；
++//   - 本项目约定：sampler uniform 声明在所有 float uniform 之后
++//     （见 shaders/depth_parallax.frag:45）。
++//
++// 【算法（与 Kyant0 Lens 同构）】
++//   圆角盒 SDF d：d>0 形外原样透传；d<0 内部按「凸缘高度剖面」折射——
++//   边带内 h = sqrt(1-(depth/thickness)^2)（外缘 1 → 带内缘 0），采样点
++//   向内偏移 -n·h·strength，RGB 三通道偏移量错开 = 边缘色散；内部整体
++//   3% 放大造透镜感；BloomStroke 双光源（左上主光 + 右下副光）沿法线在
++//   环带上加白。
++uniform vec2 u_size;        // float 槽 0-1（引擎注入，勿写）
++uniform float u_radius;     // 2: 圆角半径（物理 px）
++uniform float u_thickness;  // 3: 折射边带厚度（物理 px）
++uniform float u_refract;    // 4: 折射强度 0-1
++uniform float u_blur;       // 5: 内部模糊 sigma（物理 px）
++uniform float u_chroma;     // 6: 色散强度（物理 px）
++uniform float u_specular;   // 7: 高光强度 0-1
++uniform float u_edge;       // 8: 高光环带宽度（物理 px）
++
++// 约定：sampler 声明在所有 float uniform 之后
++uniform sampler2D u_backdrop; // 槽 0：引擎绑定为滤镜输入
++
++out vec4 fragColor;
++
++float sdRoundBox(vec2 p, vec2 halfSize, float r) {
++  vec2 q = abs(p) - halfSize + r;
++  return length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
++}
++
++vec2 uv2tex(vec2 uv) {
++#ifdef IMPELLER_TARGET_OPENGLES
++  return vec2(uv.x, 1.0 - uv.y);
++#else
++  return uv;
++#endif
++}
++
++void main() {
++  vec2 fc = FlutterFragCoord().xy;
++  vec2 uv = fc / u_size;
++  vec2 halfSize = u_size * 0.5;
++  vec2 p = fc - halfSize;
++  float d = sdRoundBox(p, halfSize, u_radius);
++
++  // 形外：原样透传（BackdropFilter 边界内未被镜片覆盖处不改变背景）
++  if (d > 0.0) {
++    fragColor = texture(u_backdrop, uv2tex(uv));
++    return;
++  }
++
++  // SDF 中心差分 = 外法线（max 防 0 向量 NaN）
++  float e = 1.0;
++  vec2 grad = vec2(
++    sdRoundBox(p + vec2(e, 0.0), halfSize, u_radius) -
++        sdRoundBox(p - vec2(e, 0.0), halfSize, u_radius),
++    sdRoundBox(p + vec2(0.0, e), halfSize, u_radius) -
++        sdRoundBox(p - vec2(0.0, e), halfSize, u_radius)
++  );
++  vec2 n = grad / max(length(grad), 1e-4);
++
++  float depth = -d;
++  float band = 1.0 - clamp(depth / u_thickness, 0.0, 1.0); // 1 在外缘
++  float h = sqrt(max(1.0 - (1.0 - band) * (1.0 - band), 0.0)); // 凸缘剖面
++
++  // 折射位移（uv 空间）：边带内向内拉采样，外缘最强；色散分通道错开
++  float scale = u_thickness / max(u_size.x, 1.0);
++  float amt = u_refract * h * scale;
++  float ca = u_chroma * h * scale;
++  vec2 offR = -n * (amt + ca);
++  vec2 offG = -n * amt;
++  vec2 offB = -n * max(amt - ca, 0.0);
++
++  // 内部 3% 放大（透镜感）
++  vec2 mag = (halfSize + p * 0.97) / u_size;
++
++  // 9 tap 近似模糊（u_blur=0 退化为单点）
++  vec2 px = vec2(1.0) / u_size;
++  vec3 col = vec3(0.0);
++  float wsum = 0.0;
++  for (int i = -1; i <= 1; i++) {
++    for (int j = -1; j <= 1; j++) {
++      vec2 o = vec2(float(i), float(j)) * u_blur * px;
++      float w = (i == 0 && j == 0) ? 2.0 : 1.0;
++      col.r += texture(u_backdrop, uv2tex(mag + o + offR)).r * w;
++      col.g += texture(u_backdrop, uv2tex(mag + o + offG)).g * w;
++      col.b += texture(u_backdrop, uv2tex(mag + o + offB)).b * w;
++      wsum += w;
++    }
++  }
++  col /= wsum;
++
++  // BloomStroke 双光源高光：左上主光(-45°) + 右下副光，沿外法线在环带加白
++  float rim = 1.0 - smoothstep(0.0, u_edge, depth);
++  vec2 l1 = normalize(vec2(-0.6, -0.8));
++  vec2 l2 = normalize(vec2(0.7, 0.7));
++  float s1 = pow(max(dot(n, l1), 0.0), 3.0) * rim * u_specular;
++  float s2 = pow(max(dot(n, l2), 0.0), 4.0) * rim * u_specular * 0.55;
++  col += vec3(s1 + s2);
++
++  fragColor = vec4(col, 1.0);
 +}
