@@ -15,8 +15,9 @@ import 'package:flutter/material.dart';
 const String kLiquidGlassShaderAsset = 'shaders/liquid_glass.frag';
 
 /// 默认参数（GlassPill lens 10×progress 口径换算 + 实机调校余量；dp 值由
-/// widget 侧 ×dpr 换算成物理 px 再喂 shader）。
-const double kLensThicknessDp = 22.0;
+/// widget 侧 ×dpr 换算成物理 px 再喂 shader）。thickness 收窄到 14dp：
+/// 56dp 高的 pill 上 22dp 边带会盖住 40% 高度，折射带挤进内容区。
+const double kLensThicknessDp = 14.0;
 const double kLensRefract = 0.85;
 const double kLensBlurDp = 1.5;
 const double kLensChromaDp = 1.4;
