@@ -1391,10 +1391,10 @@ index b70edd2..03c9fb3 100644
        ),
 diff --git a/lib/widgets/halcyon_dock_bar.dart b/lib/widgets/halcyon_dock_bar.dart
 new file mode 100644
-index 0000000..f60fa06
+index 0000000..035f50f
 --- /dev/null
 +++ b/lib/widgets/halcyon_dock_bar.dart
-@@ -0,0 +1,422 @@
+@@ -0,0 +1,426 @@
 +// Halcyon 液态玻璃悬浮底栏（Flutter 移植版）。
 +// 蓝本：Halcyon (Kotlin Compose) ui/components/FloatingBottomBar.kt +
 +// ui/animation/DampedDragAnimation.kt 的可见行为子集（行号见注释）：
@@ -1656,17 +1656,21 @@ index 0000000..f60fa06
 +            child: Transform.scale(
 +              scale: bulge,
 +              child: DecoratedBox(
-+                // 【Halcyon 阴影】GlassPill 投影：10dp 黑（亮 0.20 / 暗 0.10）
-+                // + y 偏移 4。必须画在 ClipRRect 外层——裁剪层会吃掉阴影。
++                // 【Halcyon 阴影】GlassPill.kt:78-85 的 dropShadow 原样：
++                //   Shadow(radius = 10.dp, color = Black, alpha = if (isInDark) 0.2f else 0.1f)
++                // 注意两点此前都搬错了：
++                //   1) alpha 是「暗 0.20 / 亮 0.10」——暗色玻璃更需要靠投影脱离壁纸，
++                //      旧写法写成了暗 0.10 / 亮 0.20，正好反了；
++                //   2) 原版**没有 y 偏移**（Shadow 默认 offset 0），旧写法擅自加了 (0,4)，
++                //      于是胶囊比原版整体"浮"了 4dp，阴影也和底边脱开。
 +                decoration: BoxDecoration(
 +                  borderRadius: BorderRadius.circular(radius),
 +                  boxShadow: <BoxShadow>[
 +                    BoxShadow(
 +                      color: Colors.black.withValues(
-+                        alpha: isDark ? 0.10 : 0.20,
++                        alpha: isDark ? 0.20 : 0.10,
 +                      ),
 +                      blurRadius: 10,
-+                      offset: const Offset(0, 4),
 +                    ),
 +                  ],
 +                ),
@@ -1727,11 +1731,11 @@ index 0000000..f60fa06
 +                                  end: Alignment.bottomRight,
 +                                  colors: <Color>[
 +                                    Colors.white.withValues(
-+                                      alpha: isDark ? 0.12 : 0.20,
++                                      alpha: isDark ? 0.10 : 0.18,
 +                                    ),
 +                                    Colors.white.withValues(alpha: 0.0),
 +                                    Colors.white.withValues(
-+                                      alpha: isDark ? 0.06 : 0.10,
++                                      alpha: isDark ? 0.05 : 0.09,
 +                                    ),
 +                                  ],
 +                                  stops: const <double>[0.0, 0.55, 1.0],
@@ -2319,10 +2323,10 @@ index e674cc7..2482369 100644
      - shaders/flowing_background.frag
 diff --git a/shaders/liquid_glass.frag b/shaders/liquid_glass.frag
 new file mode 100644
-index 0000000..fc79316
+index 0000000..9efea10
 --- /dev/null
 +++ b/shaders/liquid_glass.frag
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,166 @@
 +#version 460 core
 +
 +#include <flutter/runtime_effect.glsl>
@@ -2425,8 +2429,10 @@ index 0000000..fc79316
 +  }
 +  sd = min(sd, 0.0);
 +
-+  // 折射位移量：外缘最大 → 带内缘 0（circleMap 的输入是归一化深度）
-+  float d = circleMap(1.0 - (-sd) / u_refractionHeight) * u_refractionAmount;
++  // 折射位移量：外缘最大 → 带内缘 0（circleMap 的输入是归一化深度）。
++  // max() 防 refractionHeight=0 时除零成 inf（参数面板把它拖到 0 会走到这里）。
++  float band = 1.0 - (-sd) / max(u_refractionHeight, 0.001);
++  float d = circleMap(clamp(band, 0.0, 1.0)) * u_refractionAmount;
 +
 +  float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
 +  vec2 grad = safeNormalize(
